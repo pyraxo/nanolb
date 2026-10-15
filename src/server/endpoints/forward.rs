@@ -1,11 +1,10 @@
 use crate::app::{Account, App, Inflight, Key, Provider};
 use crate::time::now_ms;
-use crate::upstream::{self, UpstreamError, codex};
+use crate::upstream::{self, Failure, UpstreamError, classify, codex};
 use axum::body::{Body, Bytes};
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use futures_util::StreamExt;
-use serde_json::Value;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -42,13 +41,6 @@ pub(super) type Shape<'a> = &'a (dyn Fn(reqwest::RequestBuilder) -> reqwest::Req
 
 pub(super) fn json_shape(body: &Bytes) -> impl Fn(reqwest::RequestBuilder) -> reqwest::RequestBuilder + Sync + '_ {
     move |rb| rb.header(header::CONTENT_TYPE, JSON).body(body.clone())
-}
-
-fn failure_message(text: &str, v: &Value) -> String {
-    v["error"]["message"]
-        .as_str()
-        .or_else(|| v["detail"].as_str())
-        .map_or_else(|| text.chars().take(500).collect(), str::to_owned)
 }
 
 pub(super) async fn forward(app: &Arc<App>, key: &Key, c: &Call<'_>, shape: Shape<'_>) -> Result<Sent, UpstreamError> {
@@ -108,17 +100,11 @@ pub(super) async fn forward(app: &Arc<App>, key: &Key, c: &Call<'_>, shape: Shap
                 continue;
             }
         }
-        if matches!(status, 401 | 403 | 429 | 500..=599) {
-            let text = res.text().await.unwrap_or_default();
-            let v: Value = serde_json::from_str(&text).unwrap_or_default();
-            let msg = failure_message(&text, &v);
-            let until = match status {
-                429 => upstream::limit_reset_from_error(&v).unwrap_or_else(|| now_ms() + 60_000),
-                401 => now_ms() + 300_000,
-                403 => 0,
-                _ => now_ms() + 5_000,
-            };
-            if until > 0 {
+        if status < 600 && upstream::fails_over(status) {
+            let (v, msg) = upstream::error_body(&res.text().await.unwrap_or_default());
+            if let Failure::Retry(until) = classify(status, &v["error"])
+                && until > 0
+            {
                 acc.fail(until, format!("{status}: {msg}"));
             }
             tracing::warn!(account = %acc.id, status, error = %msg, "upstream error, failing over");

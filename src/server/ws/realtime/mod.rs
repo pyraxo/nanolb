@@ -1,13 +1,13 @@
 mod calls;
 
 use super::conn::Ev;
-use super::frames::{event_type, handshake, retry_until, to_client, to_upstream, ws_url};
+use super::frames::{event_type, handshake, to_client, to_upstream, ws_url};
 use super::{Link, authed};
 use crate::app::{Account, App, Key, Provider};
 use crate::server::error::{ApiError, ApiFormat};
 use crate::store::{Endpoint, Usage, UsageMeta};
 use crate::time::now_ms;
-use crate::upstream::{UpstreamError, codex};
+use crate::upstream::{self, UpstreamError, codex};
 use axum::extract::ws::{self, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, RawQuery, State};
 use axum::http::{HeaderMap, header};
@@ -102,7 +102,7 @@ async fn live(
                     .as_str()
                     .unwrap_or("upstream rejected realtime websocket")
                     .to_owned();
-                match retry_until(status, &v["error"]) {
+                match upstream::retry_until(status, &v["error"]) {
                     Some(until) if until > 0 => acc.fail(until, format!("{status}: {message}")),
                     Some(_) => {}
                     None => return Err(ApiError::new(ApiFormat::Responses, status, message)),

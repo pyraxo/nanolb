@@ -1,10 +1,10 @@
 use crate::app::{Account, App};
 use crate::time::now_ms;
-use crate::upstream::{self, UpstreamError, codex};
+use crate::upstream::{UpstreamError, codex};
 use axum::extract::ws;
 use axum::http::{HeaderMap, header};
 use bytes::Bytes;
-use serde_json::{Value, json};
+use serde_json::json;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::handshake::client::Request;
 use tokio_tungstenite::tungstenite::protocol::CloseFrame;
@@ -45,26 +45,6 @@ pub(super) fn pass_headers(src: &HeaderMap) -> HeaderMap {
         }
     }
     out
-}
-
-pub(super) fn retry_until(status: u16, err: &Value) -> Option<i64> {
-    let code = err["code"].as_str().or_else(|| err["type"].as_str()).unwrap_or_default();
-    let reset = upstream::limit_reset_from_error(&json!({ "error": err }));
-    match status {
-        429 => Some(reset.unwrap_or_else(|| now_ms() + 60_000)),
-        401 => Some(now_ms() + 300_000),
-        403 => Some(0),
-        500.. => Some(now_ms() + 5_000),
-        _ if reset.is_some() => reset,
-        _ if code.contains("rate_limit")
-            || code.contains("usage_limit")
-            || code.contains("overloaded")
-            || code.contains("server_error") =>
-        {
-            Some(now_ms() + 5_000)
-        }
-        _ => None,
-    }
 }
 
 pub(super) fn event_type(t: &str) -> &str {

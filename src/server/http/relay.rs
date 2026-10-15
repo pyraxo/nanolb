@@ -5,14 +5,14 @@ use crate::sse;
 use crate::store::{Usage, UsageMeta};
 use crate::time::{now_ms, ts_iso};
 use crate::translate::{anthropic, chat};
-use crate::upstream::{UpstreamError, codex, limit_reset_from_error};
+use crate::upstream::{UpstreamError, codex, limit_reset};
 use axum::Json;
 use axum::body::{Body, Bytes};
 use axum::http::{HeaderValue, header};
 use axum::response::{IntoResponse, Response};
 use eventsource_stream::Event;
 use futures_util::StreamExt;
-use serde_json::{Value, json};
+use serde_json::Value;
 use std::convert::Infallible;
 use std::sync::Arc;
 use std::time::Duration;
@@ -81,7 +81,7 @@ impl Tap {
         match v["type"].as_str().unwrap_or_default() {
             "response.failed" => {
                 let err = &v["response"]["error"];
-                if let Some(reset) = limit_reset_from_error(&json!({"error": err})) {
+                if let Some(reset) = limit_reset(err) {
                     acc.fail(reset, err["message"].as_str().unwrap_or("rate limited").into());
                 }
                 self.response = Some(v["response"].clone());

@@ -1,11 +1,11 @@
 use super::{call_binding, internal, with_query};
 use crate::app::{App, Provider};
 use crate::server::error::ApiError;
-use crate::server::ws::frames::{PASS_HEADERS, retry_until};
+use crate::server::ws::frames::PASS_HEADERS;
 use crate::server::ws::{authed, exhausted};
 use crate::store::{Endpoint, Usage, UsageMeta};
 use crate::time::now_ms;
-use crate::upstream::{UpstreamError, codex};
+use crate::upstream::{self, UpstreamError, codex};
 use axum::body::Body;
 use axum::extract::{RawQuery, State};
 use axum::http::{HeaderMap, HeaderValue, header};
@@ -78,7 +78,7 @@ async fn calls(app: Arc<App>, h: HeaderMap, target: String, body: Bytes) -> Resu
         let bytes = res.bytes().await.unwrap_or_default();
         if status.as_u16() >= 400 {
             let v: Value = serde_json::from_slice(&bytes).unwrap_or_default();
-            if let Some(until) = retry_until(status.as_u16(), &v["error"]) {
+            if let Some(until) = upstream::retry_until(status.as_u16(), &v["error"]) {
                 let message = v["error"]["message"].as_str().unwrap_or("upstream error").to_owned();
                 if until > 0 {
                     acc.fail(until, format!("{}: {message}", status.as_u16()));

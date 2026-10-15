@@ -6,7 +6,7 @@ use crate::store::StoreError;
 use crate::time::now_ms;
 use axum::http::HeaderMap;
 use reqwest::StatusCode;
-use serde_json::{Value, json};
+use serde_json::Value;
 use tokio_tungstenite::tungstenite;
 
 #[derive(Debug, thiserror::Error)]
@@ -81,33 +81,52 @@ pub(crate) enum Failure {
     Client,
 }
 
-pub(crate) fn limit_reset_from_error(body: &Value) -> Option<i64> {
-    let e = &body["error"];
-    e["resets_at"]
+pub(crate) fn limit_reset(err: &Value) -> Option<i64> {
+    err["resets_at"]
         .as_i64()
         .map(|s| s * 1000)
-        .or_else(|| e["resets_in_seconds"].as_i64().map(|s| now_ms() + s * 1000))
+        .or_else(|| err["resets_in_seconds"].as_i64().map(|s| now_ms() + s * 1000))
+}
+
+pub(crate) fn error_body(text: &str) -> (Value, String) {
+    let v: Value = serde_json::from_str(text).unwrap_or_default();
+    let message = v["error"]["message"]
+        .as_str()
+        .or_else(|| v["detail"].as_str())
+        .map_or_else(|| text.chars().take(500).collect(), str::to_owned);
+    (v, message)
+}
+
+pub(crate) const fn fails_over(status: u16) -> bool {
+    matches!(status, 401 | 403 | 429 | 500..)
+}
+
+fn status_retry(status: u16, err: &Value) -> Option<i64> {
+    fails_over(status).then(|| match status {
+        429 => limit_reset(err).unwrap_or_else(|| now_ms() + 60_000),
+        401 => now_ms() + 300_000,
+        403 => 0,
+        _ => now_ms() + 5_000,
+    })
+}
+
+fn error_retry(err: &Value) -> Option<i64> {
+    let code = err["code"].as_str().or_else(|| err["type"].as_str()).unwrap_or_default();
+    limit_reset(err).or_else(|| {
+        ["rate_limit", "usage_limit", "overloaded", "server_error"]
+            .iter()
+            .any(|c| code.contains(c))
+            .then(|| now_ms() + 5_000)
+    })
 }
 
 pub(crate) fn classify(status: u16, err: &Value) -> Failure {
-    let code = err["code"].as_str().or_else(|| err["type"].as_str()).unwrap_or_default();
-    let reset = limit_reset_from_error(&json!({ "error": err }));
-    match (status, reset) {
-        (429, r) => Failure::Retry(r.unwrap_or_else(|| now_ms() + 60_000)),
-        (401, _) => Failure::Retry(now_ms() + 300_000),
-        (403, _) => Failure::Retry(0),
-        (500.., _) => Failure::Retry(now_ms() + 5_000),
-        (0, Some(r)) => Failure::Retry(r),
-        (0, None)
-            if code.contains("rate_limit")
-                || code.contains("usage_limit")
-                || code.contains("overloaded")
-                || code.contains("server_error") =>
-        {
-            Failure::Retry(now_ms() + 5_000)
-        }
-        _ => Failure::Client,
-    }
+    let until = if status == 0 { error_retry(err) } else { status_retry(status, err) };
+    until.map_or(Failure::Client, Failure::Retry)
+}
+
+pub(crate) fn retry_until(status: u16, err: &Value) -> Option<i64> {
+    status_retry(status, err).or_else(|| error_retry(err))
 }
 
 pub(crate) fn request(

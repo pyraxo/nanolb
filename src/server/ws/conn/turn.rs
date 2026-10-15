@@ -1,7 +1,7 @@
 use super::{Conn, Ev, Pending};
 use crate::app::{Provider, canonical_model};
 use crate::id::sha256_hex;
-use crate::server::ws::frames::{close_to_client, error_message, event_type, retry_until, status_of, to_client, to_upstream};
+use crate::server::ws::frames::{close_to_client, error_message, event_type, status_of, to_client, to_upstream};
 use crate::time::now_ms;
 use crate::upstream::{self, codex};
 use axum::extract::ws::{self, WebSocket};
@@ -150,7 +150,7 @@ impl Conn {
         }
         let v: Value = serde_json::from_str(t).unwrap_or_default();
         let status = status_of(v["status"].as_u64().or_else(|| v["status_code"].as_u64()), 0);
-        let Some(until) = retry_until(status, &v["error"]) else {
+        let Some(until) = upstream::retry_until(status, &v["error"]) else {
             return false;
         };
         let msg = v["error"]["message"].as_str().unwrap_or("upstream error").to_owned();
@@ -181,7 +181,7 @@ impl Conn {
                     _ => 502,
                 };
                 if kind == "response.failed"
-                    && let Some(reset) = upstream::limit_reset_from_error(&json!({"error": resp["error"]}))
+                    && let Some(reset) = upstream::limit_reset(&resp["error"])
                 {
                     self.cool(reset, resp["error"]["message"].as_str().unwrap_or("rate limited"));
                 }

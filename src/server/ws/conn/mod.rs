@@ -1,12 +1,12 @@
 mod turn;
 
-use super::frames::{error_frame, handshake, pass_headers, retry_until};
+use super::frames::{error_frame, handshake, pass_headers};
 use super::{Link, exhausted, header_session, limited_until};
 use crate::app::{Account, App, Key, Provider, Sessions};
 use crate::server::error::ApiError;
 use crate::store::{Endpoint, Usage, UsageMeta};
 use crate::time::{now_ms, ts_iso};
-use crate::upstream::{UpstreamError, codex};
+use crate::upstream::{self, UpstreamError, codex};
 use axum::extract::ws;
 use axum::http::{HeaderMap, HeaderValue};
 use futures::SinkExt;
@@ -112,12 +112,8 @@ impl Conn {
                         }
                     }
                     let text = resp.body().as_deref().map(String::from_utf8_lossy).unwrap_or_default().to_string();
-                    let v: Value = serde_json::from_str(&text).unwrap_or_default();
-                    let message = v["error"]["message"]
-                        .as_str()
-                        .or_else(|| v["detail"].as_str())
-                        .map_or_else(|| text.chars().take(500).collect(), str::to_owned);
-                    let Some(until) = retry_until(status, &v["error"]) else {
+                    let (v, message) = upstream::error_body(&text);
+                    let Some(until) = upstream::retry_until(status, &v["error"]) else {
                         tracing::warn!(account = %acc.id, status, error = %message, "upstream rejected websocket");
                         return Err(UpstreamError::Status { status, message });
                     };

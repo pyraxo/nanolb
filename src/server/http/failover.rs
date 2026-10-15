@@ -188,12 +188,7 @@ fn cool(acc: &Account, ms: i64, reason: String, e: UpstreamError) -> Step {
 }
 
 async fn rejected(acc: &Account, status: u16, res: Response) -> Step {
-    let text = res.text().await.unwrap_or_default();
-    let v: Value = serde_json::from_str(&text).unwrap_or_default();
-    let message = v["error"]["message"]
-        .as_str()
-        .or_else(|| v["detail"].as_str())
-        .map_or_else(|| text.chars().take(500).collect(), str::to_owned);
+    let (v, message) = upstream::error_body(&res.text().await.unwrap_or_default());
     match classify(status, &v["error"]) {
         Failure::Client => {
             tracing::warn!(account = %acc.id, status, error = %message, "upstream rejected request");
