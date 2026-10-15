@@ -96,6 +96,21 @@ struct Upstream {
     first: Event,
     events: Events,
     ttfb: i64,
+    headers: HeaderMap,
+}
+
+const TURN_STATE: &str = "x-codex-turn-state";
+const PASS_HEADERS: &[&str] = &["x-request-id", "openai-model", "x-reasoning-included", "x-models-etag"];
+
+fn passthrough_headers(h: &HeaderMap) -> HeaderMap {
+    let mut out = HeaderMap::new();
+    for (k, v) in h {
+        let n = k.as_str();
+        if PASS_HEADERS.contains(&n) || n.starts_with("x-codex-") {
+            out.append(k.clone(), v.clone());
+        }
+    }
+    out
 }
 
 fn is_failure(ev: &Event) -> bool {
@@ -160,9 +175,20 @@ async fn send(
     let mut tried: Vec<String> = vec![];
     let mut refreshed: Vec<String> = vec![];
     let mut last = (503u16, "no available accounts".to_string());
+    let mut first_acc: Option<String> = None;
+    let stripped = std::cell::OnceCell::new();
     for _ in 0..app.settings().max_attempts.max(1) {
         let Some(acc) = app.pick(provider, &key.cfg.accounts, &tried, Some(session)) else {
             break;
+        };
+        let first_id = first_acc.get_or_insert_with(|| acc.id.clone());
+        let h = match h {
+            Some(ch) if *first_id != acc.id && ch.contains_key(TURN_STATE) => Some(stripped.get_or_init(|| {
+                let mut c = ch.clone();
+                c.remove(TURN_STATE);
+                c
+            })),
+            other => other,
         };
         if let Err(e) = codex::ensure_fresh(app, &acc, false).await {
             tried.push(acc.id.clone());
@@ -222,6 +248,7 @@ async fn send(
             last = (status, msg);
             continue;
         }
+        let headers = passthrough_headers(res.headers());
         let mut events: Events = Box::pin(res.bytes_stream().eventsource());
         match tokio::time::timeout(first_timeout, events.next()).await {
             Ok(Some(Ok(ev))) if is_failure(&ev) => {
@@ -248,6 +275,7 @@ async fn send(
                     first,
                     events,
                     ttfb: now_ms(),
+                    headers,
                 });
             }
             other => {
@@ -360,7 +388,9 @@ async fn run(job: Job, up: Upstream, mut tx: Tx, stream: bool, opts_json: impl F
         first,
         mut events,
         ttfb,
+        headers,
     } = up;
+    let pass = job.kind == Kind::Responses;
     if !stream {
         let mut tap = Tap::default();
         let mut sink = vec![];
@@ -380,7 +410,11 @@ async fn run(job: Job, up: Upstream, mut tx: Tx, stream: bool, opts_json: impl F
         if resp["status"] == "failed" {
             return error(job.kind, 502, resp["error"]["message"].as_str().unwrap_or("upstream failed"));
         }
-        return axum::Json(opts_json(&resp)).into_response();
+        let mut res = axum::Json(opts_json(&resp)).into_response();
+        if pass {
+            res.headers_mut().extend(headers);
+        }
+        return res;
     }
     let idle = std::time::Duration::from_secs(job.app.settings().idle_timeout_secs.max(30));
     let (sender, rx) = tokio::sync::mpsc::channel::<Bytes>(128);
@@ -422,6 +456,9 @@ async fn run(job: Job, up: Upstream, mut tx: Tx, stream: bool, opts_json: impl F
     h.insert(header::CONTENT_TYPE, HeaderValue::from_static("text/event-stream"));
     h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
     h.insert("x-accel-buffering", HeaderValue::from_static("no"));
+    if pass {
+        h.extend(headers);
+    }
     res
 }
 
