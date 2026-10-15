@@ -374,7 +374,7 @@ impl Default for Settings {
                 .map(String::from)
                 .collect(),
             keepalive_secs: 15,
-            compress_upstream: false,
+            compress_upstream: true,
             realtime_base: "https://api.openai.com/v1".into(),
             prewarm: false,
         }

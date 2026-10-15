@@ -644,7 +644,7 @@ name = "nanolb"
 base_url = "{url}/backend-api/codex"
 wire_api = "responses"
 env_key = "NANOLB_API_KEY"
-supports_websockets = false
+supports_websockets = true
 
 [model_providers.nanolb.capabilities]
 remote_compaction = "v2"

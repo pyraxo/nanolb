@@ -360,6 +360,9 @@ fn endpoint_name(s: &str) -> &'static str {
         "transcribe" => "transcribe",
         "images" => "images",
         "embeddings" => "embeddings",
+        "responses_ws" => "responses_ws",
+        "realtime" => "realtime",
+        "realtime_call" => "realtime_call",
         _ => "other",
     }
 }
