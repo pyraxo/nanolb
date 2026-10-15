@@ -42,7 +42,7 @@ pub(crate) async fn openrouter_models(State(app): State<Arc<App>>) -> Json<Value
         settings
             .pricing
             .rates(m)
-            .map_or_else(|| "0".to_owned(), |r| format!("{}", <[f64; 3]>::from(r)[i] / 1e6))
+            .map_or_else(|| "0".to_owned(), |r| per_token(<[f64; 3]>::from(r)[i]))
     };
     let created = app.started_at / 1000;
     let data: Vec<Value> = app
@@ -92,7 +92,7 @@ pub(crate) async fn codex_models(
     codex::ensure_fresh(&app, &acc, false)
         .await
         .map_err(|e| ApiError::new(format, 502, e.to_string()))?;
-    let query = q.unwrap_or_else(|| format!("client_version={}", s.codex_version));
+    let query = q.unwrap_or_else(|| format!("client_version={}", app.codex_version(&s)));
     let res = codex::request(&app, &s, &acc, reqwest::Method::GET, &format!("/codex/models?{query}"), Some(&h))
         .header(header::ACCEPT, "application/json")
         .send()
@@ -106,4 +106,22 @@ pub(crate) async fn codex_models(
         out.headers_mut().insert(header::CONTENT_TYPE, ct);
     }
     Ok(out)
+}
+
+fn per_token(per_million: f64) -> String {
+    let s = format!("{:.12}", per_million / 1e6);
+    let s = s.trim_end_matches('0').trim_end_matches('.');
+    if s.is_empty() { "0".to_owned() } else { s.to_owned() }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::per_token;
+
+    #[test]
+    fn per_token_prices_print_without_float_noise() {
+        assert_eq!(per_token(0.1), "0.0000001");
+        assert_eq!(per_token(2.0), "0.000002");
+        assert_eq!(per_token(0.0), "0");
+    }
 }

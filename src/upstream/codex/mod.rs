@@ -78,6 +78,7 @@ pub(crate) fn request(
     path: &str,
     client: Option<&HeaderMap>,
 ) -> reqwest::RequestBuilder {
+    let version = app.codex_version(s);
     let c = a.cfg.read();
     let mut rb = app
         .http
@@ -86,7 +87,7 @@ pub(crate) fn request(
         .header("chatgpt-account-id", &c.chatgpt_account_id)
         .header("accept", "text/event-stream")
         .header("originator", "codex_cli_rs")
-        .header("version", &s.codex_version);
+        .header("version", version.as_str());
     let mut ua = None;
     if let Some(h) = client {
         for (k, v) in h {
@@ -103,6 +104,6 @@ pub(crate) fn request(
     }
     rb.header(
         "user-agent",
-        ua.unwrap_or_else(|| format!("codex_cli_rs/{} (Mac OS 26.5.0; arm64) nanolb", s.codex_version)),
+        ua.unwrap_or_else(|| format!("codex_cli_rs/{version} (Mac OS 26.5.0; arm64) nanolb")),
     )
 }

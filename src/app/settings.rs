@@ -1,6 +1,9 @@
 use crate::pricing::{DEFAULT_MODELS, Pricing};
 use serde::{Deserialize, Serialize};
 
+pub(crate) const AUTO_VERSION: &str = "auto";
+pub(crate) const CODEX_VERSION_FALLBACK: &str = "0.162.1";
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub(crate) struct Settings {
@@ -42,7 +45,7 @@ impl Default for Settings {
             models: DEFAULT_MODELS.iter().map(|s| (*s).to_owned()).collect(),
             pricing: Pricing::defaults(),
             upstream_base: "https://chatgpt.com/backend-api".into(),
-            codex_version: "0.160.0".into(),
+            codex_version: AUTO_VERSION.into(),
             usage_poll_secs: 60,
             warmup_model: "gpt-6-luna".into(),
             first_event_timeout_secs: 90,

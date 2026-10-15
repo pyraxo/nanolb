@@ -73,7 +73,7 @@ The model id in the request selects the provider. nanolb never replaces one mode
 | Contains `/` | OpenRouter accounts | Example: `z-ai/glm-5.3-flash`, `anthropic/claude-opus-5.5`. |
 | Any other id | Codex accounts | Example: `gpt-6.1-sol`. |
 
-- nanolb removes a leading `openai/` first. So `openai/gpt-5.5` becomes `gpt-5.5` and goes to Codex.
+- nanolb removes a leading `openai/` first. So `openai/gpt-6.1-sol` becomes `gpt-6.1-sol` and goes to Codex.
 - An id with `/` always goes to OpenRouter. For example, `anthropic/claude-opus-5.5` goes to OpenRouter.
 - `POST /v1/messages` accepts the Anthropic format. It serves Codex models (and OpenRouter ids) to Anthropic-format clients. Use a Codex model id, for example `gpt-6.1-sol`.
 - If no account of the selected provider is connected, nanolb returns 503.
@@ -94,7 +94,7 @@ All routes in this table need a client key (`Authorization: Bearer nlb-...` or `
 | `GET /backend-api/wham/usage`, `GET /api/codex/usage` | Pool usage for the key: plan, primary and secondary window, `allowed`. |
 | `GET /v1/usage` | Usage and limits of the calling key, and pool usage. |
 | `POST /backend-api/files`, `POST /backend-api/files/{id}/uploaded` | File upload to Codex. nanolb remembers which account owns the file. |
-| `POST /backend-api/transcribe`, `POST /v1/audio/transcriptions` | Transcription (multipart). The `/v1` route needs `model=gpt-4o-transcribe`. |
+| `POST /backend-api/transcribe`, `POST /v1/audio/transcriptions` | Transcription (multipart). The `/v1` route needs a `model` field. The key's model list must allow that model. The ChatGPT backend selects the transcription model itself. |
 | `POST /v1/images/generations`, `POST /backend-api/codex/images/generations` | Image generation. Default model `gpt-image-2`. Not streamed. |
 | `POST /v1/images/edits` (multipart), `POST /backend-api/codex/images/edits` (JSON `images[].image_url`) | Image edit. Up to 16 images and an optional mask. |
 | `POST /v1/embeddings` | Embeddings. OpenRouter model ids only (with `/`). |
@@ -309,7 +309,7 @@ Each account in `accounts ls` and `status` has `latency.ttfb_ewma_ms` and `laten
 
 ### Settings fields (defaults)
 
-`strategy` (`preserve`), `sticky` (`true`), `max_attempts` (4, accounts tried for each request), `models`, `pricing` (model to `[input, cached, output]` USD per 1M tokens), `upstream_base`, `codex_version` (`0.160.0`), `usage_poll_secs` (60), `warmup_model` (`gpt-6-luna`), `openrouter_base`, `openrouter_models`, `first_event_timeout_secs` (90), `idle_timeout_secs` (600), `keepalive_secs` (15), `compress_upstream` (`true`), `realtime_base` (`https://api.openai.com/v1`), `prewarm` (`false`). An unknown setting name returns an error.
+`strategy` (`preserve`), `sticky` (`true`), `max_attempts` (4, accounts tried for each request), `models`, `pricing` (model to `[input, cached, output]` USD per 1M tokens), `upstream_base`, `codex_version` (`auto`: nanolb reads the latest `@openai/codex` release from npm at startup and every 24 hours, with `0.162.1` as the fallback; set a fixed version to pin it), `usage_poll_secs` (60), `warmup_model` (`gpt-6-luna`), `openrouter_base`, `openrouter_models`, `first_event_timeout_secs` (90), `idle_timeout_secs` (600), `keepalive_secs` (15), `compress_upstream` (`true`), `realtime_base` (`https://api.openai.com/v1`), `prewarm` (`false`). An unknown setting name returns an error.
 
 ### Warmup
 
@@ -402,7 +402,6 @@ An account object has `id`, `kind` (`codex` or `openrouter`), `email`, `label`, 
 | `login ... not found` | The server restarted, or the id is wrong. Login state is in memory. Start the login again. |
 | WebSocket in the Codex CLI fails or falls back to HTTP | Check `supports_websockets = true`. Check the log for `upstream rejected websocket` or `websocket handshake failed`. An HTTP fallback still works. |
 | `404 realtime call binding not found or expired` | The call id is unknown or old. Create the call again with `POST /v1/realtime/calls`. |
-| `400 model X is not supported, use gpt-4o-transcribe` | `/v1/audio/transcriptions` accepts only that model. |
 | `400 model "X" is not supported for embeddings` | Embeddings need an OpenRouter model id with `/`, for example `openai/text-embedding-3-small`, and an OpenRouter account. |
 | Image request returns no image | Image calls are not streamed. The message gives the upstream error. Check `model` and the account plan. |
 | A request with `file_id` fails after a failover | The file belongs to one account, and that account was limited or failing. Wait for it, or upload the file again. |

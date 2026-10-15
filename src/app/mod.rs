@@ -17,7 +17,7 @@ pub(crate) use keys::Keys;
 pub(crate) use logins::{LoginState, Logins};
 pub(crate) use models::{ModelCatalog, canonical_model};
 pub(crate) use sessions::Sessions;
-pub(crate) use settings::Settings;
+pub(crate) use settings::{AUTO_VERSION, CODEX_VERSION_FALLBACK, Settings};
 
 use crate::store::{Store, StoreError, Usage};
 use crate::time::now_ms;
@@ -34,6 +34,7 @@ pub struct App {
     pub(crate) files: FileOwners,
     pub(crate) logins: Logins,
     pub(crate) models: ModelCatalog,
+    codex_latest: ArcSwap<String>,
     pub(crate) http: reqwest::Client,
     pub(crate) admin_token: String,
     pub(crate) started_at: i64,
@@ -71,10 +72,23 @@ impl App {
             files,
             logins: Logins::default(),
             models: ModelCatalog::default(),
+            codex_latest: ArcSwap::from_pointee(CODEX_VERSION_FALLBACK.to_owned()),
             http: http_client(),
             admin_token,
             started_at: now,
         }))
+    }
+
+    pub(crate) fn codex_version(&self, s: &Settings) -> Arc<String> {
+        if s.codex_version == AUTO_VERSION {
+            self.codex_latest.load_full()
+        } else {
+            Arc::new(s.codex_version.clone())
+        }
+    }
+
+    pub(crate) fn set_codex_latest(&self, version: String) {
+        self.codex_latest.store(Arc::new(version));
     }
 
     pub(crate) fn settings(&self) -> Arc<Settings> {

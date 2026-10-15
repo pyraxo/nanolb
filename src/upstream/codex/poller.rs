@@ -8,10 +8,33 @@ use std::time::Duration;
 
 const MIN_POLL_SECS: u64 = 15;
 const WARMUP_TICK: Duration = Duration::from_secs(20);
+const CODEX_RELEASE_URL: &str = "https://registry.npmjs.org/@openai/codex/latest";
+const VERSION_CHECK: Duration = Duration::from_hours(24);
 
 pub(crate) fn spawn_background(app: Arc<App>) {
     tokio::spawn(poll_usage(app.clone()));
+    tokio::spawn(track_codex_version(app.clone()));
     tokio::spawn(fire_warmups(app));
+}
+
+async fn track_codex_version(app: Arc<App>) {
+    loop {
+        if let Some(v) = latest_codex_version(&app).await {
+            tracing::info!(version = %v, "codex client version");
+            app.set_codex_latest(v);
+        } else {
+            tracing::warn!("cannot read the latest codex version, keeping the current one");
+        }
+        tokio::time::sleep(VERSION_CHECK).await;
+    }
+}
+
+async fn latest_codex_version(app: &App) -> Option<String> {
+    let res = app.http.get(CODEX_RELEASE_URL).timeout(Duration::from_secs(10)).send().await.ok()?;
+    let v: serde_json::Value = res.json().await.ok()?;
+    let version = v["version"].as_str()?;
+    let valid = !version.is_empty() && version.split('.').all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()));
+    valid.then(|| version.to_owned())
 }
 
 async fn poll_usage(app: Arc<App>) {

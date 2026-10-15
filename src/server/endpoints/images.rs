@@ -45,9 +45,6 @@ fn data_url(data: &[u8], content_type: Option<&str>) -> String {
 
 fn image_model(opts: &Value, key: &Key) -> Result<String, ApiError> {
     let model = opts["model"].as_str().unwrap_or(DEFAULT_IMAGE_MODEL).to_owned();
-    if !model.starts_with("gpt-image-") {
-        return Err(bad_request(format!("unsupported image model {model}, use a gpt-image-* model")));
-    }
     require_model(key, &model)?;
     Ok(model)
 }

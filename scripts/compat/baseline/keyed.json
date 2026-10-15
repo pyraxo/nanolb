@@ -85,11 +85,11 @@
           "name": "openai/gpt-6.1-sol",
           "per_request_limits": null,
           "pricing": {
-            "completion": "0",
+            "completion": "0.00001",
             "image": "0",
-            "input_cache_read": "0",
+            "input_cache_read": "0.0000001",
             "internal_reasoning": "0",
-            "prompt": "0",
+            "prompt": "0.000002",
             "request": "0",
             "web_search": "0"
           },
@@ -131,7 +131,7 @@
           "pricing": {
             "completion": "0.00001",
             "image": "0",
-            "input_cache_read": "0.00000020000000000000002",
+            "input_cache_read": "0.0000002",
             "internal_reasoning": "0",
             "prompt": "0.000002",
             "request": "0",
@@ -221,7 +221,7 @@
             "image": "0",
             "input_cache_read": "0.00000001",
             "internal_reasoning": "0",
-            "prompt": "0.00000010000000000000001",
+            "prompt": "0.0000001",
             "request": "0",
             "web_search": "0"
           },
@@ -263,7 +263,7 @@
           "pricing": {
             "completion": "0.00002",
             "image": "0",
-            "input_cache_read": "0.00000040000000000000003",
+            "input_cache_read": "0.0000004",
             "internal_reasoning": "0",
             "prompt": "0.000004",
             "request": "0",
@@ -307,7 +307,7 @@
           "pricing": {
             "completion": "0.000012",
             "image": "0",
-            "input_cache_read": "0.00000020000000000000002",
+            "input_cache_read": "0.0000002",
             "internal_reasoning": "0",
             "prompt": "0.000002",
             "request": "0",
@@ -353,7 +353,7 @@
             "image": "0",
             "input_cache_read": "0.00000002",
             "internal_reasoning": "0",
-            "prompt": "0.00000020000000000000002",
+            "prompt": "0.0000002",
             "request": "0",
             "web_search": "0"
           },
@@ -537,7 +537,7 @@
       },
       "cached_input_tokens": 0,
       "limits": [],
-      "request_count": 0,
+      "request_count": 2,
       "total_cost_usd": 0.0,
       "total_tokens": 0,
       "upstream_limits": []
@@ -654,11 +654,11 @@
     "body": {
       "error": {
         "code": null,
-        "message": "unsupported image model gpt-5.4, use a gpt-image-* model",
+        "message": "no available accounts",
         "type": "api_error"
       }
     },
-    "status": 400
+    "status": 503
   },
   "POST /backend-api/codex/realtime/calls": {
     "body": {
@@ -856,11 +856,11 @@
     "body": {
       "error": {
         "code": null,
-        "message": "unsupported image model gpt-5.4, use a gpt-image-* model",
+        "message": "no available accounts",
         "type": "api_error"
       }
     },
-    "status": 400
+    "status": 503
   },
   "POST /v1/messages array-body": {
     "body": {

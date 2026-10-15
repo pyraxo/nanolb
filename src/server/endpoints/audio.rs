@@ -13,7 +13,7 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-const TRANSCRIBE_MODEL: &str = "gpt-4o-transcribe";
+const BACKEND_MODEL: &str = "transcribe";
 
 pub(super) struct Upload {
     pub(super) name: String,
@@ -56,27 +56,27 @@ fn part(data: &Bytes, file_name: &str, content_type: &str) -> Part {
     make().mime_str(content_type).unwrap_or_else(|_| make())
 }
 
-fn check_model(form: &Fields, key: &Key) -> Result<(), ApiError> {
-    match form.text.get("model").map(String::as_str) {
-        None => Err(bad_request("model is required")),
-        Some(m) if m != TRANSCRIBE_MODEL => Err(bad_request(format!("model {m} is not supported, use {TRANSCRIBE_MODEL}"))),
-        Some(m) => require_model(key, m),
-    }
+fn check_model<'a>(form: &'a Fields, key: &Key) -> Result<&'a str, ApiError> {
+    let model = form
+        .text
+        .get("model")
+        .map(String::as_str)
+        .ok_or_else(|| bad_request("model is required"))?;
+    require_model(key, model)?;
+    Ok(model)
 }
 
 async fn transcribe(app: Arc<App>, key: Arc<Key>, mp: Multipart, v1: bool) -> Result<Response, ApiError> {
     let started = now_ms();
     prelude(&key)?;
     let form = read_form(mp).await?;
-    if v1 {
-        check_model(&form, &key)?;
-    }
+    let model = if v1 { check_model(&form, &key)? } else { BACKEND_MODEL };
     let Some(file) = form.files.iter().find(|f| f.name == "file") else {
         return Err(bad_request("file is required"));
     };
     let prompt = form.text.get("prompt");
     let content_type = file.content_type.clone().unwrap_or_else(|| "application/octet-stream".into());
-    let req = Req::new(&app, &key, Endpoint::Transcribe, TRANSCRIBE_MODEL, started);
+    let req = Req::new(&app, &key, Endpoint::Transcribe, model, started);
     let call = Call::post(Provider::Codex, "/transcribe", JSON);
     let shape = |rb: reqwest::RequestBuilder| {
         let mut f = Form::new().part("file", part(&file.data, &file.file_name, &content_type));
