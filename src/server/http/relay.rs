@@ -48,8 +48,9 @@ impl Tx {
         match (self, parsed) {
             (Self::Pass, _) => out.push(sse::frame((ev.event != "message").then_some(ev.event.as_str()), &ev.data)),
             (Self::Chat(s), Some(v)) => s.event(v, out),
+            (Self::Chat(s), None) => s.event_data(&ev.data, out),
             (Self::Anth(s), Some(v)) => s.event(v, out),
-            _ => {}
+            (Self::Anth(s), None) => s.event_data(&ev.data, out),
         }
     }
 
@@ -210,7 +211,7 @@ struct Pump {
 
 impl Pump {
     fn on(&mut self, ev: &Event) {
-        let parsed = self.tap.observe(ev, &self.acc, false, !matches!(self.tx, Tx::Pass));
+        let parsed = self.tap.observe(ev, &self.acc, false, false);
         self.tx.emit(ev, parsed.as_ref(), &mut self.out);
     }
 

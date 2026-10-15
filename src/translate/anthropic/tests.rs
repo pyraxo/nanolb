@@ -98,3 +98,36 @@ fn stream_text_then_tool_call() {
     assert!(md.contains("\"input_tokens\":6"));
     assert!(md.contains("\"cache_read_input_tokens\":4"));
 }
+
+#[test]
+fn data_path_matches_value_path() {
+    let evs = [
+        r#"{"type":"response.created","response":{"id":"resp_abc"}}"#,
+        r#"{"type":"response.output_item.added","item":{"type":"reasoning"}}"#,
+        r#"{"type":"response.reasoning_summary_text.delta","delta":"hm \"q\""}"#,
+        r#"{"type":"response.output_item.done","item":{"type":"reasoning","encrypted_content":"sig"}}"#,
+        r#"{"type":"response.output_item.added","item":{"type":"message"}}"#,
+        r#"{"type":"response.content_part.added","part":{"type":"output_text"}}"#,
+        r#"{"type":"response.output_text.delta","delta":"Hi\né 😀"}"#,
+        r#"{"type":"response.output_text.delta","delta":""}"#,
+        r#"{"type":"response.refusal.delta","delta":"no"}"#,
+        r#"{"type":"response.output_text.done","text":"Hi"}"#,
+        r#"{"type":"response.output_item.added","item":{"type":"function_call","call_id":"c","name":"f"}}"#,
+        r#"{"type":"response.function_call_arguments.delta","delta":"{\"x\":1}"}"#,
+        r#"{"type":"response.function_call_arguments.delta","delta":5}"#,
+        r#"{"type":"response.output_item.done","item":{"type":"function_call","arguments":"{}"}}"#,
+        r#"{"type":"response.completed","response":{"id":"resp_abc","output":[],"usage":{"input_tokens":3}}}"#,
+    ];
+    let opts = || Opts {
+        model: "claude-x".into(),
+        thinking: true,
+    };
+    let (mut a, mut b) = (Stream::new(opts()), Stream::new(opts()));
+    let (mut x, mut y) = (Vec::new(), Vec::new());
+    for e in evs {
+        a.event_data(e, &mut x);
+        b.event(&serde_json::from_str(e).unwrap(), &mut y);
+    }
+    assert_eq!(x, y);
+    assert_eq!(x.len(), 15);
+}

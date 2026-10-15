@@ -1,3 +1,5 @@
+mod data;
+
 use super::Opts;
 use super::response::{finish_reason, id_for, usage_json};
 use bytes::Bytes;
@@ -25,19 +27,23 @@ pub(crate) struct Stream {
     has_tool: bool,
     tools: Vec<ToolSlot>,
     usage: Option<Value>,
+    tail: Vec<u8>,
 }
 
 impl Stream {
     pub(crate) fn new(opts: Opts) -> Self {
-        Self {
+        let mut s = Self {
             id: id_for("0", opts.openrouter),
             created: 0,
             phase: Phase::Fresh,
             has_tool: false,
             tools: Vec::new(),
             usage: None,
+            tail: Vec::new(),
             opts,
-        }
+        };
+        s.set_tail();
+        s
     }
 
     fn finished(&self) -> bool {
@@ -80,20 +86,22 @@ impl Stream {
         }
     }
 
-    fn args(&mut self, out: &mut Vec<Bytes>, item_id: &str, args: &str, only_if_unsent: bool) {
+    fn slot(&mut self, item_id: &str, only_if_unsent: bool) -> Option<usize> {
         let pos = self
             .tools
             .iter()
             .position(|s| s.item_id == item_id)
             .or_else(|| self.tools.len().checked_sub(1));
-        let Some(slot) = pos.and_then(|p| self.tools.get_mut(p)) else {
-            return;
-        };
+        let slot = pos.and_then(|p| self.tools.get_mut(p))?;
         if only_if_unsent && slot.args_sent {
-            return;
+            return None;
         }
         slot.args_sent = true;
-        let index = slot.index;
+        Some(slot.index)
+    }
+
+    fn args(&mut self, out: &mut Vec<Bytes>, item_id: &str, args: &str, only_if_unsent: bool) {
+        let Some(index) = self.slot(item_id, only_if_unsent) else { return };
         let args = if args.is_empty() && only_if_unsent { "{}" } else { args };
         self.delta(out, json!({"tool_calls":[{"index":index,"function":{"arguments":args}}]}));
     }
@@ -155,6 +163,7 @@ impl Stream {
                 if let Some(c) = r["created_at"].as_i64() {
                     self.created = c;
                 }
+                self.set_tail();
                 self.start(out);
             }
             "response.output_text.delta" => {

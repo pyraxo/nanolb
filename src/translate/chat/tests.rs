@@ -79,3 +79,33 @@ fn stream_text_then_tool_call() {
     assert_eq!(frames[6], "data: [DONE]\n\n");
     assert_eq!(frames.len(), 7);
 }
+
+#[test]
+fn data_path_matches_value_path() {
+    let opts = || Opts {
+        openrouter: true,
+        include_usage: true,
+        include_reasoning: true,
+        model: "gpt-\"5\"".into(),
+        rates: None,
+    };
+    let evs = [
+        r#"{"type":"response.created","response":{"id":"resp_abc","created_at":1700000000}}"#,
+        r#"{"type":"response.reasoning_summary_text.delta","delta":"think"}"#,
+        r#"{"type":"response.output_text.delta","item_id":"m","delta":"Hi \"there\"\né 😀"}"#,
+        r#"{"type":"response.output_text.delta"}"#,
+        r#"{"type":"response.refusal.delta","delta":"no"}"#,
+        r#"{"type":"response.output_item.added","item":{"type":"function_call","id":"fc_1","call_id":"c","name":"wx"}}"#,
+        r#"{"type":"response.function_call_arguments.delta","item_id":"fc_1","delta":"{\"a\":"}"#,
+        r#"{"type":"response.function_call_arguments.delta","item_id":"fc_1","delta":7}"#,
+        r#"{"type":"response.completed","response":{"output":[],"usage":{"input_tokens":1,"output_tokens":2}}}"#,
+    ];
+    let (mut a, mut b) = (Stream::new(opts()), Stream::new(opts()));
+    let (mut x, mut y) = (Vec::new(), Vec::new());
+    for e in evs {
+        a.event_data(e, &mut x);
+        b.event(&serde_json::from_str(e).unwrap(), &mut y);
+    }
+    assert_eq!(x, y);
+    assert_eq!(x.len(), 9);
+}
