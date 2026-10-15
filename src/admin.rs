@@ -91,16 +91,19 @@ pub(crate) fn parse_since(v: &Value) -> Result<i64, String> {
 }
 
 pub(crate) fn account_or_err(app: &App, a: &Value) -> Result<Arc<crate::state::Account>, String> {
-    let id = s(a, "id")?;
-    app.account(id).ok_or_else(|| format!("account {id} not found"))
+    app.find_account(s(a, "id")?)
 }
 
-fn apply_key_fields(cfg: &mut KeyCfg, a: &Value) -> Result<(), String> {
+fn apply_key_fields(app: &App, cfg: &mut KeyCfg, a: &Value) -> Result<(), String> {
     if let Some(n) = a["name"].as_str() {
         cfg.name = n.into();
     }
     if !a["accounts"].is_null() {
-        cfg.accounts = serde_json::from_value(a["accounts"].clone()).map_err(|e| format!("accounts: {e}"))?;
+        let names: Vec<String> = serde_json::from_value(a["accounts"].clone()).map_err(|e| format!("accounts: {e}"))?;
+        cfg.accounts = names
+            .iter()
+            .map(|n| app.find_account(n).map(|acc| acc.id.clone()))
+            .collect::<Result<_, _>>()?;
     }
     if !a["models"].is_null() {
         cfg.models = serde_json::from_value(a["models"].clone()).map_err(|e| format!("models: {e}"))?;
@@ -248,7 +251,7 @@ pub async fn op_call(app: &Arc<App>, op: &str, a: Value) -> Result<Value, String
                 expires_at: None,
                 created_at: now_ms(),
             };
-            apply_key_fields(&mut cfg, &a)?;
+            apply_key_fields(app, &mut cfg, &a)?;
             let mut v = app.save_key(cfg).view();
             v["key"] = Value::String(secret);
             v
@@ -257,7 +260,7 @@ pub async fn op_call(app: &Arc<App>, op: &str, a: Value) -> Result<Value, String
             let id = s(&a, "id")?;
             let k = app.find_key(id).ok_or_else(|| format!("key {id} not found"))?;
             let mut cfg = k.cfg.clone();
-            apply_key_fields(&mut cfg, &a)?;
+            apply_key_fields(app, &mut cfg, &a)?;
             app.save_key(cfg).view()
         }
         "key_remove" => {

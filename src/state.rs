@@ -515,11 +515,29 @@ impl App {
     }
 
     pub fn account(&self, id: &str) -> Option<Arc<Account>> {
-        self.accounts
-            .read()
+        self.find_account(id).ok()
+    }
+
+    pub fn find_account(&self, query: &str) -> Result<Arc<Account>, String> {
+        let accs = self.accounts.read();
+        if let Some(a) = accs.iter().find(|a| a.id == query) {
+            return Ok(a.clone());
+        }
+        let hits: Vec<&Arc<Account>> = accs
             .iter()
-            .find(|a| a.id == id || a.cfg.read().email == id)
-            .cloned()
+            .filter(|a| {
+                let c = a.cfg.read();
+                c.email.eq_ignore_ascii_case(query) || c.label.eq_ignore_ascii_case(query)
+            })
+            .collect();
+        match hits.as_slice() {
+            [a] => Ok((*a).clone()),
+            [] => Err(format!("account {query} not found (use an id, email or label)")),
+            many => Err(format!(
+                "account {query} is ambiguous, use one of the ids: {}",
+                many.iter().map(|a| a.id.as_str()).collect::<Vec<_>>().join(", ")
+            )),
+        }
     }
 
     pub fn save_account(&self, a: &Account) {
@@ -808,6 +826,21 @@ mod tests {
         assert_eq!(app.next_available("codex", &[]), Some(b_reset));
         app.account("a").unwrap().rl.lock().secondary_used = 40.0;
         assert_eq!(app.next_available("codex", &[]), None);
+    }
+
+    #[test]
+    fn accounts_resolve_by_id_email_or_label_and_reject_ambiguous_names() {
+        let app = app_with(Strategy::Preserve, &[("a", 0.0, 0), ("b", 0.0, 0)]);
+        for (id, email, label) in [("a", "me@x.io", "Work"), ("b", "me@x.io", "personal")] {
+            let acc = app.account(id).unwrap();
+            let mut c = acc.cfg.write();
+            c.email = email.into();
+            c.label = label.into();
+        }
+        assert_eq!(app.find_account("b").unwrap().id, "b");
+        assert_eq!(app.find_account("work").unwrap().id, "a");
+        assert!(app.find_account("me@x.io").err().is_some_and(|e| e.contains("ambiguous")));
+        assert!(app.find_account("nobody").is_err());
     }
 
     #[test]

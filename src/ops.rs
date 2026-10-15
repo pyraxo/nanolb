@@ -12,7 +12,10 @@ pub fn routes() -> Router<Arc<App>> {
 
 pub fn sessions_list(app: &App, a: &Value) -> Value {
     let key = a["key"].as_str();
-    let account = a["account"].as_str();
+    let resolved = a["account"]
+        .as_str()
+        .map(|q| app.find_account(q).map_or_else(|_| q.to_string(), |acc| acc.id.clone()));
+    let account = resolved.as_deref();
     let limit = a["limit"].as_u64().unwrap_or(100) as usize;
     let mut rows: Vec<(String, String, i64)> = app
         .sticky
@@ -39,7 +42,11 @@ pub fn session_delete(app: &App, a: &Value) -> Result<Value, String> {
 
 pub fn sessions_purge(app: &App, a: &Value) -> Result<Value, String> {
     let all = a["all"].as_bool().unwrap_or(false);
-    let account = a["account"].as_str();
+    let resolved = match a["account"].as_str() {
+        Some(q) => Some(app.find_account(q)?.id.clone()),
+        None => None,
+    };
+    let account = resolved.as_deref();
     let cutoff = match a.get("older_than").filter(|v| !v.is_null()) {
         Some(v) => Some(parse_since(v)?),
         None => None,
