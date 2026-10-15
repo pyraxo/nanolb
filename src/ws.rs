@@ -3,10 +3,11 @@ use crate::now_ms;
 use crate::proxy::{self, Inflight, Kind};
 use crate::state::{Account, App, Key};
 use axum::Router;
-use axum::extract::State;
 use axum::extract::ws::{self, WebSocket, WebSocketUpgrade};
+use axum::extract::{Path, Query, RawQuery, State};
 use axum::http::{HeaderMap, HeaderName, HeaderValue, header};
 use axum::response::Response;
+use axum::routing::{get, post};
 use bytes::Bytes;
 use futures::{SinkExt, StreamExt};
 use serde_json::{Value, json};
@@ -24,6 +25,11 @@ const PASS_HEADERS: &[&str] = &["openai-model", "x-reasoning-included", "x-model
 
 pub fn routes() -> Router<Arc<App>> {
     Router::new()
+        .route("/backend-api/codex/realtime/calls", post(backend_calls))
+        .route("/v1/realtime/calls", post(v1_calls))
+        .route("/v1/realtime", get(v1_realtime))
+        .route("/v1/live/{call_id}", get(v1_live))
+        .route("/backend-api/codex/{call_id}", get(v1_live))
 }
 
 struct Fail(u16, String);
@@ -613,6 +619,319 @@ pub async fn upgrade(State(app): State<Arc<App>>, h: HeaderMap, ws: WebSocketUpg
         res.headers_mut().append(HeaderName::clone(k), v.clone());
     }
     res
+}
+
+fn call_binding(key: &Key, call_id: &str) -> String {
+    format!("rt\u{1f}{}\u{1f}{call_id}", key.cfg.id)
+}
+
+fn call_id_from_location(loc: &str) -> Option<&str> {
+    let path = loc.split(['?', '#']).next()?;
+    path.rsplit('/')
+        .find(|s| !s.is_empty() && s.starts_with("rtc_"))
+        .or_else(|| path.rsplit('/').find(|s| !s.is_empty()))
+}
+
+fn with_query(url: String, q: Option<&str>) -> String {
+    match q.filter(|q| !q.is_empty()) {
+        Some(q) => format!("{url}?{q}"),
+        None => url,
+    }
+}
+
+fn authed(app: &App, h: &HeaderMap) -> Result<Arc<Key>, Fail> {
+    let key = proxy::auth(app, h).ok_or_else(|| Fail(401, "invalid or missing api key".into()))?;
+    key.check(now_ms()).map_err(|e| Fail(429, e))?;
+    Ok(key)
+}
+
+async fn calls(app: Arc<App>, h: HeaderMap, target: String, body: Bytes) -> Response {
+    let started = now_ms();
+    let key = match authed(&app, &h) {
+        Ok(k) => k,
+        Err(f) => return proxy::error(Kind::Responses, f.0, &f.1),
+    };
+    let s = app.settings();
+    let mut tried: Vec<String> = vec![];
+    let mut last = Fail(503, "no available accounts".into());
+    for _ in 0..s.max_attempts.max(1) {
+        let Some(acc) = app.pick("codex", &key.cfg.accounts, &tried, None) else {
+            break;
+        };
+        tried.push(acc.id.clone());
+        if let Err(e) = codex::ensure_fresh(&app, &acc, false).await {
+            last = Fail(502, e);
+            continue;
+        }
+        let mut rb = codex::request(&app, &acc, reqwest::Method::POST, "/codex/realtime/calls", Some(&h))
+            .header(
+                header::ACCEPT,
+                h.get(header::ACCEPT).cloned().unwrap_or(HeaderValue::from_static("*/*")),
+            )
+            .body(body.clone());
+        if let Some(ct) = h.get(header::CONTENT_TYPE) {
+            rb = rb.header(header::CONTENT_TYPE, ct);
+        }
+        let mut req = match rb.build() {
+            Ok(r) => r,
+            Err(e) => return proxy::error(Kind::Responses, 500, &e.to_string()),
+        };
+        match reqwest::Url::parse(&target) {
+            Ok(u) => *req.url_mut() = u,
+            Err(e) => return proxy::error(Kind::Responses, 500, &e.to_string()),
+        }
+        let res = match tokio::time::timeout(Duration::from_secs(s.first_event_timeout_secs.max(5)), app.http.execute(req)).await {
+            Ok(Ok(r)) => r,
+            Ok(Err(e)) => {
+                acc.fail(now_ms() + 15_000, format!("connect: {e}"));
+                last = Fail(502, format!("upstream connect failed: {e}"));
+                continue;
+            }
+            Err(_) => {
+                acc.fail(now_ms() + 15_000, "realtime call timed out".into());
+                last = Fail(504, "upstream timed out".into());
+                continue;
+            }
+        };
+        codex::apply_rate_headers(&acc, res.headers());
+        let status = res.status().as_u16();
+        let headers = res.headers().clone();
+        let bytes = res.bytes().await.unwrap_or_default();
+        if status >= 400 {
+            let v: Value = serde_json::from_slice(&bytes).unwrap_or_default();
+            if let Some(until) = retry_until(status, &v["error"]) {
+                let msg = v["error"]["message"].as_str().unwrap_or("upstream error").to_string();
+                if until > 0 {
+                    acc.fail(until, format!("{status}: {msg}"));
+                }
+                last = Fail(status, msg);
+                continue;
+            }
+        }
+        if (200..300).contains(&status)
+            && let Some(id) = headers
+                .get(header::LOCATION)
+                .and_then(|v| v.to_str().ok())
+                .and_then(call_id_from_location)
+        {
+            app.sticky.lock().insert(call_binding(&key, id), (acc.id.clone(), now_ms()));
+        }
+        app.record(
+            Some(&key),
+            codex::usage_row(
+                &key.cfg.id,
+                &acc.id,
+                "realtime",
+                "realtime_call",
+                status,
+                &Value::Null,
+                started,
+                now_ms(),
+            ),
+        );
+        let mut out = Response::new(axum::body::Body::from(bytes));
+        *out.status_mut() = axum::http::StatusCode::from_u16(status).unwrap_or(axum::http::StatusCode::BAD_GATEWAY);
+        for (k, v) in headers.iter() {
+            if [header::CONTENT_TYPE, header::LOCATION].contains(k) || PASS_HEADERS.contains(&k.as_str()) {
+                out.headers_mut().append(k.clone(), v.clone());
+            }
+        }
+        return out;
+    }
+    match (last.0 == 503).then(|| app.next_available("codex", &key.cfg.accounts)).flatten() {
+        Some(until) => proxy::limited(Kind::Responses, "codex", until),
+        None => proxy::error(Kind::Responses, last.0, &last.1),
+    }
+}
+
+async fn live(app: Arc<App>, h: HeaderMap, ws: WebSocketUpgrade, call_id: Option<String>, target: String, model: String) -> Response {
+    let key = match authed(&app, &h) {
+        Ok(k) => k,
+        Err(f) => return proxy::error(Kind::Responses, f.0, &f.1),
+    };
+    let owner = match &call_id {
+        Some(c) => {
+            let bound = app.sticky.lock().get(&call_binding(&key, c)).map(|(id, _)| id.clone());
+            match bound.and_then(|id| app.account(&id)) {
+                Some(a) => Some(a),
+                None => return proxy::error(Kind::Responses, 404, "realtime call binding not found or expired"),
+            }
+        }
+        None => None,
+    };
+    let s = app.settings();
+    let mut tried: Vec<String> = vec![];
+    let mut last = Fail(503, "no available accounts".into());
+    for _ in 0..s.max_attempts.max(1) {
+        let acc = match &owner {
+            Some(a) if tried.is_empty() => a.clone(),
+            Some(_) => break,
+            None => match app.pick("codex", &key.cfg.accounts, &tried, None) {
+                Some(a) => a,
+                None => break,
+            },
+        };
+        tried.push(acc.id.clone());
+        if let Err(e) = codex::ensure_fresh(&app, &acc, false).await {
+            last = Fail(502, e);
+            continue;
+        }
+        let mut req = match handshake(&app, &acc, &h, Some(&ws_url(&target))) {
+            Ok(r) => r,
+            Err(e) => return proxy::error(Kind::Responses, 500, &e),
+        };
+        if let Some(p) = h.get(header::SEC_WEBSOCKET_PROTOCOL) {
+            req.headers_mut().insert(header::SEC_WEBSOCKET_PROTOCOL, p.clone());
+        }
+        match tokio::time::timeout(
+            Duration::from_secs(s.first_event_timeout_secs.max(5)),
+            tokio_tungstenite::connect_async(req),
+        )
+        .await
+        {
+            Ok(Ok((up, resp))) => {
+                let proto = resp
+                    .headers()
+                    .get(header::SEC_WEBSOCKET_PROTOCOL)
+                    .and_then(|v| v.to_str().ok())
+                    .map(str::to_string);
+                let ws = match proto {
+                    Some(p) => ws.protocols([p]),
+                    None => ws,
+                };
+                acc.inflight.fetch_add(1, Relaxed);
+                let link = Link {
+                    ws: up,
+                    _guard: Inflight(acc.clone()),
+                    acc,
+                };
+                return ws.on_upgrade(move |client| relay_live(app, key, link, client, model));
+            }
+            Ok(Err(tung::Error::Http(resp))) => {
+                let status = resp.status().as_u16();
+                let v: Value = resp
+                    .body()
+                    .as_deref()
+                    .and_then(|b| serde_json::from_slice(b).ok())
+                    .unwrap_or_default();
+                let msg = v["error"]["message"]
+                    .as_str()
+                    .unwrap_or("upstream rejected realtime websocket")
+                    .to_string();
+                match retry_until(status, &v["error"]) {
+                    Some(until) if until > 0 => acc.fail(until, format!("{status}: {msg}")),
+                    Some(_) => {}
+                    None => return proxy::error(Kind::Responses, status, &msg),
+                }
+                last = Fail(status, msg);
+            }
+            Ok(Err(e)) => {
+                acc.fail(now_ms() + 15_000, format!("connect: {e}"));
+                last = Fail(502, format!("upstream websocket connect failed: {e}"));
+            }
+            Err(_) => {
+                acc.fail(now_ms() + 15_000, "realtime handshake timed out".into());
+                last = Fail(504, "upstream timed out".into());
+            }
+        }
+    }
+    proxy::error(Kind::Responses, last.0, &last.1)
+}
+
+async fn relay_live(app: Arc<App>, key: Arc<Key>, mut up: Link, mut client: WebSocket, mut model: String) {
+    let started = now_ms();
+    loop {
+        let ev = tokio::select! {
+            m = client.recv() => Ev::Client(m),
+            m = up.ws.next() => Ev::Up(m),
+        };
+        match ev {
+            Ev::Client(Some(Ok(m))) => {
+                let close = matches!(m, ws::Message::Close(_));
+                if let Some(u) = to_upstream(m)
+                    && up.ws.send(u).await.is_err()
+                {
+                    break;
+                }
+                if close {
+                    break;
+                }
+            }
+            Ev::Up(Some(Ok(m))) => {
+                if let Message::Text(t) = &m {
+                    match event_type(t) {
+                        "session.created" | "session.updated" => {
+                            if let Some(m) = serde_json::from_str::<Value>(t)
+                                .ok()
+                                .and_then(|v| v["session"]["model"].as_str().map(str::to_string))
+                            {
+                                model = m;
+                            }
+                        }
+                        "response.done" => {
+                            let v: Value = serde_json::from_str(t).unwrap_or_default();
+                            let u = &v["response"]["usage"];
+                            let usage = json!({
+                                "input_tokens": u["input_tokens"], "output_tokens": u["output_tokens"],
+                                "input_tokens_details": {"cached_tokens": u["input_token_details"]["cached_tokens"]},
+                            });
+                            let row = codex::usage_row(&key.cfg.id, &up.acc.id, &model, "realtime", 200, &usage, started, started);
+                            app.record(Some(&key), row);
+                        }
+                        _ => {}
+                    }
+                }
+                let close = matches!(m, Message::Close(_));
+                if let Some(c) = to_client(m)
+                    && client.send(c).await.is_err()
+                {
+                    break;
+                }
+                if close {
+                    break;
+                }
+            }
+            Ev::Up(Some(Err(_)) | None) => {
+                let _ = client.send(ws::Message::Close(None)).await;
+                break;
+            }
+            Ev::Client(_) => break,
+            Ev::Timeout => {}
+        }
+    }
+    let _ = up.ws.close(None).await;
+}
+
+async fn backend_calls(State(app): State<Arc<App>>, h: HeaderMap, RawQuery(q): RawQuery, body: Bytes) -> Response {
+    let target = with_query(format!("{}/codex/realtime/calls", app.settings().upstream_base), q.as_deref());
+    calls(app, h, target, body).await
+}
+
+async fn v1_calls(State(app): State<Arc<App>>, h: HeaderMap, RawQuery(q): RawQuery, body: Bytes) -> Response {
+    let target = with_query(format!("{}/realtime/calls", app.settings().realtime_base), q.as_deref());
+    calls(app, h, target, body).await
+}
+
+async fn v1_realtime(State(app): State<Arc<App>>, h: HeaderMap, Query(q): Query<Vec<(String, String)>>, ws: WebSocketUpgrade) -> Response {
+    let get = |k: &str| q.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone());
+    let (call_id, model) = (get("call_id"), get("model").unwrap_or_else(|| "realtime".into()));
+    let mut url = reqwest::Url::parse(&format!("{}/realtime", app.settings().realtime_base)).expect("realtime_base url");
+    url.query_pairs_mut().extend_pairs(q.iter());
+    live(app, h, ws, call_id, url.to_string(), model).await
+}
+
+async fn v1_live(
+    State(app): State<Arc<App>>,
+    h: HeaderMap,
+    Path(call_id): Path<String>,
+    RawQuery(q): RawQuery,
+    ws: WebSocketUpgrade,
+) -> Response {
+    if matches!(call_id.as_str(), "." | "..") || !call_id.chars().all(|c| c.is_ascii_alphanumeric() || "._~-".contains(c)) {
+        return proxy::error(Kind::Responses, 404, "invalid realtime call id");
+    }
+    let target = with_query(format!("{}/live/{call_id}", app.settings().realtime_base), q.as_deref());
+    live(app, h, ws, Some(call_id), target, "realtime".into()).await
 }
 
 #[cfg(test)]
