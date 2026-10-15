@@ -161,9 +161,6 @@ async fn refresh_inner(app: &App, a: &Account, force: bool) -> Result<(), String
     if a.cfg.read().last_refresh != before {
         return Ok(());
     }
-    if a.cfg.read().kind == "claude" {
-        return crate::claude::refresh(app, a).await;
-    }
     let refresh_token = a.cfg.read().refresh_token.clone();
     let res = app
         .http
@@ -377,9 +374,6 @@ pub async fn fetch_models(app: &App, a: &Account) -> Result<(), String> {
 }
 
 pub async fn warmup(app: &Arc<App>, a: &Arc<Account>) -> Value {
-    if a.cfg.read().kind == "claude" {
-        return crate::claude::warmup(app, a).await;
-    }
     let w = a.cfg.read().warmup.clone();
     let (model, prompt) = w.map_or_else(|| (app.settings().warmup_model.clone(), "hi".to_string()), |w| (w.model, w.prompt));
     let model = if model.is_empty() {
@@ -447,7 +441,6 @@ pub fn usage_row(key: &str, account: &str, model: &str, endpoint: &'static str, 
         cost: u["cost"].as_f64().unwrap_or_else(|| crate::pricing::cost(model, u)),
         latency_ms: (now - started).max(0) as u64,
         ttfb_ms: (ttfb - started).max(0) as u64,
-        billing: "",
     }
 }
 

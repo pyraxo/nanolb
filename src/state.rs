@@ -290,10 +290,6 @@ pub struct Settings {
     pub openrouter_models: Vec<String>,
     pub first_event_timeout_secs: u64,
     pub idle_timeout_secs: u64,
-    pub claude_base: String,
-    pub claude_cli_version: String,
-    pub claude_models: Vec<String>,
-    pub claude_warmup_model: String,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -317,26 +313,13 @@ impl Default for Settings {
             codex_version: "0.160.0".into(),
             usage_poll_secs: 60,
             warmup_model: "gpt-6-luna".into(),
-            claude_base: "https://api.anthropic.com".into(),
-            claude_cli_version: "2.1.300".into(),
-            claude_models: ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"]
-                .into_iter()
-                .map(String::from)
-                .collect(),
-            claude_warmup_model: "claude-haiku-5-5".into(),
             first_event_timeout_secs: 90,
             idle_timeout_secs: 600,
             openrouter_base: "https://openrouter.ai/api/v1".into(),
-            openrouter_models: [
-                "z-ai/glm-5.3-flash",
-                "deepseek/deepseek-v4.1-flash",
-                "anthropic/claude-opus-5.5",
-                "anthropic/claude-sonnet-5.5",
-                "anthropic/claude-haiku-5.5",
-            ]
-            .into_iter()
-            .map(String::from)
-            .collect(),
+            openrouter_models: ["z-ai/glm-5.3-flash", "deepseek/deepseek-v4.1-flash"]
+                .into_iter()
+                .map(String::from)
+                .collect(),
         }
     }
 }
@@ -454,9 +437,6 @@ impl App {
         if self.accounts.read().iter().any(|a| a.cfg.read().kind == "openrouter") {
             out.extend(s.openrouter_models.iter().map(|m| (m.clone(), 1_000_000)));
         }
-        if self.accounts.read().iter().any(|a| a.cfg.read().kind == "claude") {
-            out.extend(s.claude_models.iter().map(|m| (m.clone(), 1_000_000)));
-        }
         out
     }
 
@@ -465,13 +445,7 @@ impl App {
     }
 
     pub fn provider_for(model: &str) -> &'static str {
-        if model.contains('/') {
-            "openrouter"
-        } else if model.starts_with("claude") {
-            "claude"
-        } else {
-            "codex"
-        }
+        if model.contains('/') { "openrouter" } else { "codex" }
     }
 
     pub fn settings(&self) -> Arc<Settings> {
@@ -640,7 +614,7 @@ impl App {
         tracing::info!(
             endpoint = u.endpoint, key = %u.key_id, account = %u.account_id, model = %u.model, status = u.status,
             input = u.input, cached = u.cached, output = u.output, reasoning = u.reasoning, cost_usd = u.cost,
-            latency_ms = u.latency_ms, ttfb_ms = u.ttfb_ms, billing = u.billing, "request"
+            latency_ms = u.latency_ms, ttfb_ms = u.ttfb_ms, "request"
         );
         if let Some(k) = key {
             k.add(u.ts, u.input + u.output, u.cost);

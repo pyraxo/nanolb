@@ -4,7 +4,7 @@ This file is for AI agents (Claude Code, Codex, Hermes and others). Follow it to
 
 ## 1. What nanolb is
 
-- nanolb is one Rust binary with a SQLite store. It is a load balancer for Codex (ChatGPT) accounts, Claude accounts and OpenRouter keys.
+- nanolb is one Rust binary with a SQLite store. It is a load balancer for Codex (ChatGPT) accounts and OpenRouter keys.
 - Clients send OpenAI Responses, OpenAI Chat, OpenRouter or Anthropic Messages requests. nanolb picks an account, fails over before the first byte, and keeps one conversation on one account so the prompt cache stays warm.
 - You control it with the CLI, the admin RPC and MCP. There is no web GUI.
 
@@ -87,12 +87,12 @@ The model id in the request selects the provider. nanolb never replaces one mode
 
 | Model id | Provider | Notes |
 |---|---|---|
-| Starts with `claude` | Claude accounts | Only through `POST /v1/messages`. Other endpoints return 400. |
 | Contains `/` | OpenRouter accounts | Example: `z-ai/glm-5.3-flash`, `anthropic/claude-opus-5.5`. |
 | Any other id | Codex accounts | Example: `gpt-6.1-sol`. |
 
 - nanolb removes a leading `openai/` first. So `openai/gpt-5.5` becomes `gpt-5.5` and goes to Codex.
-- The check order is: `/` first, then `claude`, then Codex. Note that `anthropic/claude-opus-5.5` contains `/`, so it goes to OpenRouter.
+- An id with `/` always goes to OpenRouter. For example, `anthropic/claude-opus-5.5` goes to OpenRouter.
+- `POST /v1/messages` accepts the Anthropic format. It serves Codex models (and OpenRouter ids) to Anthropic-format clients. Use a Codex model id, for example `gpt-6.1-sol`.
 - If no account of the selected provider is connected, nanolb returns 503.
 - To list the models, run `nanolb models` (admin op `models`) or `GET /v1/models`.
 
@@ -120,34 +120,7 @@ How to hand a URL or code to the human: print it in your reply to the user, or s
 
 `nanolb login --browser` starts a PKCE login. It listens on `127.0.0.1:1455` for the callback and opens the browser. HUMAN: the human signs in. The browser must run on the same machine as the CLI. Port 1455 must be free. The command times out after 300 seconds. Use the device login when the browser is on another machine.
 
-### 4.3 Claude login (own session per account)
-
-1. Call `claude_login_start`:
-   ```sh
-   nanolb call claude_login_start '{"label":"claude-1"}'
-   ```
-   The result has `login_id` and `authorize_url`.
-2. HUMAN: the human opens `authorize_url`, signs in to the Claude (Pro or Max) account, and copies the code that the page shows. Ask the human to paste the code to you. The format `code#state` is accepted.
-3. Call `claude_login_finish`:
-   ```sh
-   nanolb call claude_login_finish '{"login_id":"<login_id>","code":"<code>"}'
-   ```
-   The result is the new account.
-
-The CLI shortcut is `nanolb login --claude --label claude-1`. It needs a human at the terminal to paste the code.
-
-### 4.4 Claude, `claude setup-token`
-
-1. HUMAN: the human runs `claude setup-token` in a terminal and finishes the browser sign-in. The command prints a token that starts with `sk-ant-oat`. The human gives the token to you.
-2. Add it:
-   ```sh
-   nanolb accounts add-claude-token sk-ant-oat... --label claude-2
-   ```
-   The same is `nanolb call account_add_claude_token '{"token":"sk-ant-oat...","label":"claude-2"}'`.
-
-The token lasts about one year. It does not refresh. It allows inference only.
-
-### 4.5 OpenRouter key
+### 4.3 OpenRouter key
 
 No human browser step is needed if the human gives you the key.
 
@@ -157,11 +130,11 @@ nanolb accounts add-openrouter sk-or-... --label or-1
 
 nanolb checks the key with `GET /key` on OpenRouter. It returns an error if OpenRouter rejects the key.
 
-### 4.6 Warning: do not share a login with a live CLI
+### 4.4 Warning: do not share a login with a live CLI
 
-A refresh token can be used one time only. When nanolb refreshes a token, the old token stops working. Do not run `nanolb accounts import` on a `~/.codex/auth.json` that the Codex CLI still uses. Do not copy Claude credentials from the keychain or from `.credentials.json` if Claude Code still uses them. If you do, the CLI or nanolb loses its session. Use the logins in 4.1 to 4.3. They give nanolb its own session. `account_import` and `account_add_tokens` are for tokens that no other program uses.
+A refresh token can be used one time only. When nanolb refreshes a token, the old token stops working. Do not run `nanolb accounts import` on a `~/.codex/auth.json` that the Codex CLI still uses. If you do, the CLI or nanolb loses its session. Use the logins in 4.1 and 4.2. They give nanolb its own session. `account_import` and `account_add_tokens` are for tokens that no other program uses.
 
-### 4.7 Check the accounts
+### 4.5 Check the accounts
 
 ```sh
 nanolb accounts ls
@@ -200,7 +173,7 @@ Base URL: `http://127.0.0.1:2455`. Replace it if nanolb runs on another host. Ru
 NANOLB_API_KEY=nlb-...
 ```
 
-`~/.hermes/config.yaml`. The first provider serves gpt models with the Responses transport. The second serves claude models with the Anthropic transport. The Anthropic client adds `/v1/messages`, so its `api` has no `/v1`.
+`~/.hermes/config.yaml`. The first provider uses the Responses transport. The second provider serves the same Codex models with the Anthropic transport. The Anthropic client adds `/v1/messages`, so its `api` has no `/v1`.
 
 ```yaml
 providers:
@@ -210,17 +183,17 @@ providers:
     transport: codex_responses
     default_model: gpt-6.1-sol
     discover_models: true
-  nanolb-claude:
+  nanolb-anthropic:
     api: http://127.0.0.1:2455
     key_env: NANOLB_API_KEY
     transport: anthropic_messages
-    default_model: claude-sonnet-5-5
+    default_model: gpt-6.1-sol
 model:
   default: gpt-6.1-sol
   provider: custom:nanolb
 ```
 
-To use Claude: `hermes chat --provider custom:nanolb-claude --model claude-sonnet-5-5`. Check the flag names with `hermes --help`.
+To use the Anthropic transport: `hermes chat --provider custom:nanolb-anthropic --model gpt-6.1-sol`. Check the flag names with `hermes --help`.
 
 ### Codex CLI
 
@@ -246,7 +219,7 @@ export ANTHROPIC_BASE_URL=http://127.0.0.1:2455
 export ANTHROPIC_AUTH_TOKEN=nlb-...
 ```
 
-Use `claude-*` model ids. A Claude account must be connected (section 4.3 or 4.4).
+Set a Codex model id: `export ANTHROPIC_MODEL=gpt-6.1-sol`. nanolb translates the Anthropic request to the Codex format. A Codex account must be connected (section 4.1 or 4.2).
 
 ### OpenAI SDK
 
@@ -258,7 +231,7 @@ Base URL `http://127.0.0.1:2455/api/v1`, API key `nlb-...`. Endpoints: `POST /ap
 
 ### Anthropic SDK
 
-Base URL `http://127.0.0.1:2455`. nanolb accepts the key in `x-api-key` or `Authorization: Bearer`. Endpoints: `POST /v1/messages`, `POST /v1/messages/count_tokens`.
+Base URL `http://127.0.0.1:2455`. nanolb accepts the key in `x-api-key` or `Authorization: Bearer`. Endpoints: `POST /v1/messages`, `POST /v1/messages/count_tokens`, `GET /v1/models` (send the `anthropic-version` header). Use Codex model ids.
 
 ### Sticky key
 
@@ -291,7 +264,7 @@ The strategy picks the account for a new conversation. A sticky conversation kee
 
 ### Settings fields (defaults)
 
-`strategy` (`preserve`), `sticky` (`true`), `max_attempts` (4, accounts tried for each request), `models`, `pricing` (model to `[input, cached, output]` USD per 1M tokens), `upstream_base`, `codex_version` (`0.160.0`), `usage_poll_secs` (60), `warmup_model` (`gpt-6-luna`), `openrouter_base`, `openrouter_models`, `first_event_timeout_secs` (90), `idle_timeout_secs` (600), `claude_base`, `claude_cli_version`, `claude_models`, `claude_warmup_model` (`claude-haiku-5-5`). An unknown setting name returns an error.
+`strategy` (`preserve`), `sticky` (`true`), `max_attempts` (4, accounts tried for each request), `models`, `pricing` (model to `[input, cached, output]` USD per 1M tokens), `upstream_base`, `codex_version` (`0.160.0`), `usage_poll_secs` (60), `warmup_model` (`gpt-6-luna`), `openrouter_base`, `openrouter_models`, `first_event_timeout_secs` (90), `idle_timeout_secs` (600). An unknown setting name returns an error.
 
 ### Warmup
 
@@ -339,11 +312,8 @@ curl -s -X POST http://127.0.0.1:2455/admin/status -H "Authorization: Bearer $TO
 | `account_import` | `auth_json` (object or string), `label?` | account |
 | `account_add_tokens` | `id_token`, `access_token`, `refresh_token`, `label?` | account |
 | `account_add_openrouter` | `api_key`, `label?` | account |
-| `account_add_claude_token` | `token`, `label?` | account |
 | `login_start` | `label?` | `login_id`, `verification_url`, `user_code`, `expires_at` |
 | `login_poll` | `login_id` | `status` (`pending`, `done`, `error`), `account?`, `error?` |
-| `claude_login_start` | `label?` | `login_id`, `authorize_url` |
-| `claude_login_finish` | `login_id`, `code` | account |
 | `account_update` | `id`, `enabled?`, `priority?`, `label?`, `warmup?` (`{cron, model?, prompt?}` or null) | account |
 | `account_remove` | `id` | `{removed}` |
 | `account_refresh` | `id` | account (refreshes tokens, fetches usage, clears cooldown) |
@@ -358,7 +328,7 @@ curl -s -X POST http://127.0.0.1:2455/admin/status -H "Authorization: Bearer $TO
 | `settings_update` | any settings field | settings |
 | `models` | none | list of `{id, context_window}` |
 
-An account object has `id`, `kind` (`codex`, `claude` or `openrouter`), `email`, `label`, `plan`, `enabled`, `priority`, `available`, `cooldown_until`, `inflight`, `rate_limit`, `last_error` and `warmup`.
+An account object has `id`, `kind` (`codex` or `openrouter`), `email`, `label`, `plan`, `enabled`, `priority`, `available`, `cooldown_until`, `inflight`, `rate_limit`, `last_error` and `warmup`.
 
 ## 9. Troubleshooting
 
@@ -367,19 +337,16 @@ An account object has `id`, `kind` (`codex`, `claude` or `openrouter`), `email`,
 | `401 invalid or missing api key` | The client key is wrong, removed or missing. Check `Authorization: Bearer nlb-...` or `x-api-key`. Run `nanolb keys ls`. |
 | `401 invalid admin token` | The admin token is wrong. Read `$NANOLB_HOME/admin_token` again. It must match the server that you call. |
 | `429 all <provider> accounts are rate limited until T` | Every account of that provider is at its limit or cooling down. The `retry-after` header gives the seconds until the first reset. Wait, or connect another account. |
-| `400 Third-party apps now draw from your extra usage, not your plan limits` | Anthropic billed the request as a third-party app (for example Hermes) and the Claude account has no extra usage left. nanolb forwards Claude requests unchanged and does not disguise them as Claude Code. Use Claude Code as the client, add extra usage at claude.ai/settings/usage, or use a Codex or OpenRouter model. The account stays in rotation, because Claude Code requests on it still work. |
-| `503 no codex accounts connected to serve model X` | No account of that provider. Connect one (section 4). Check the model id against section 3. A `claude*` id needs a Claude account. An id with `/` needs an OpenRouter account. |
-| `400 X is served on POST /v1/messages` | A `claude*` model was sent to a non-Anthropic endpoint. Use `/v1/messages`. |
+| `503 no codex accounts connected to serve model X` | No account of that provider. Connect one (section 4). Check the model id against section 3. An id with `/` needs an OpenRouter account. Any other id needs a Codex account. |
 | `403 model X not allowed for this key` | The key has a `models` list. Run `nanolb keys update <id> --model X`. |
 | `429 api key day limit reached` (or week, month, total) | The key hit a limit. Raise it with `keys update`, or wait for the window. |
 | `429 api key disabled` or `expired` | Run `nanolb keys enable <id>` or set a new `--expires`. |
-| 503 `no available accounts` (or `no available claude accounts for X`) | All accounts are disabled, cooling down or already tried. Run `nanolb accounts ls`, check `available`, `cooldown_until` and `last_error`. Run `accounts refresh <id>` to clear a cooldown. |
+| 503 `no available accounts` | All accounts are disabled, cooling down or already tried. Run `nanolb accounts ls`, check `available`, `cooldown_until` and `last_error`. Run `accounts refresh <id>` to clear a cooldown. |
 | Codex returns an error that the model is not supported | The model id is not valid for the ChatGPT account. nanolb does not substitute models. Pick an id from `nanolb models`. |
 | Account cools down (log `account cooling down`) | The upstream returned 429 (until the limit reset, default 60 s), 401 (5 min), 5xx (5 s). nanolb tries the next account. If it stays, check `rate_limit` in `accounts ls`. |
 | `token refresh failed` in logs, account unavailable | 400 or 401 on refresh is permanent: the refresh token was used elsewhere or revoked. The account cools down for 1 hour. Log in again (section 4) and remove the old account. Do not share logins (section 4.6). 5xx or network errors retry after 30 s. |
 | `openrouter rejected key: 401` | The OpenRouter key is invalid. |
 | `cannot bind 127.0.0.1:1455` | Port 1455 is in use during `login --browser`. Stop the other program or use the device login. |
 | `login ... not found` | The server restarted, or the id is wrong. Login state is in memory. Start the login again. |
-| `claude token exchange failed` | The code is wrong, expired or used. Run `claude_login_start` again and use a fresh code. |
 | Poor cache hits | The client sends no stable session id. See "Sticky key" in section 6. Check `cached` in `nanolb requests`. |
 | `bind host:port: ...` at start | The port is in use. Use `--port`. |

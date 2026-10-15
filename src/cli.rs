@@ -39,8 +39,6 @@ pub enum Cmd {
         label: Option<String>,
         #[arg(long)]
         browser: bool,
-        #[arg(long)]
-        claude: bool,
     },
     Accounts {
         #[command(subcommand)]
@@ -89,11 +87,6 @@ pub enum AccountsCmd {
     },
     AddOpenrouter {
         api_key: String,
-        #[arg(long)]
-        label: Option<String>,
-    },
-    AddClaudeToken {
-        token: String,
         #[arg(long)]
         label: Option<String>,
     },
@@ -224,10 +217,8 @@ pub async fn run(cmd: Cmd) -> Result<(), String> {
         Cmd::Up { host, port } => up(&c, host, port).await,
         Cmd::Down => down().await,
         Cmd::Status => show(&c, "status", json!({})).await,
-        Cmd::Login { label, browser, claude } => {
-            let account = if claude {
-                login_claude(&c, label).await?
-            } else if browser {
+        Cmd::Login { label, browser } => {
+            let account = if browser {
                 login_browser(&c, label).await?
             } else {
                 login_device(&c, label).await?
@@ -275,9 +266,6 @@ async fn accounts(c: &Client, cmd: AccountsCmd) -> Result<(), String> {
             let path = path.unwrap_or_else(|| PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".codex/auth.json"));
             let auth_json = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
             show(c, "account_import", json!({ "auth_json": auth_json, "label": label })).await
-        }
-        AccountsCmd::AddClaudeToken { token, label } => {
-            show(c, "account_add_claude_token", json!({ "token": token, "label": label })).await
         }
         AccountsCmd::AddOpenrouter { api_key, label } => {
             show(c, "account_add_openrouter", json!({ "api_key": api_key, "label": label })).await
@@ -413,18 +401,6 @@ async fn down() -> Result<(), String> {
     Err(format!("nanolb (pid {pid}) did not stop within 10s"))
 }
 
-async fn login_claude(c: &Client, label: Option<String>) -> Result<Value, String> {
-    let start = c.call("claude_login_start", json!({ "label": label })).await?;
-    let url = start["authorize_url"].as_str().unwrap_or_default();
-    eprintln!("Open this URL, sign in to the Claude account, then paste the code shown:\n{url}");
-    let _ = open::that(url);
-    eprint!("code: ");
-    let mut code = String::new();
-    std::io::stdin().read_line(&mut code).map_err(|e| e.to_string())?;
-    c.call("claude_login_finish", json!({ "login_id": start["login_id"], "code": code.trim() }))
-        .await
-}
-
 type CallbackTx = Arc<mpsc::Sender<HashMap<String, String>>>;
 
 async fn callback(
@@ -515,9 +491,10 @@ supports_websockets = false
 
 export NANOLB_API_KEY={key}
 
-# Claude Code
+# Claude Code (Anthropic format, served by your Codex accounts)
 export ANTHROPIC_BASE_URL={url}
 export ANTHROPIC_AUTH_TOKEN={key}
+export ANTHROPIC_MODEL=gpt-6.1-sol
 
 # OpenRouter-compatible base URL
 {url}/api/v1
@@ -536,11 +513,6 @@ providers:
     transport: codex_responses
     default_model: gpt-6.1-sol
     discover_models: true
-  nanolb-claude:
-    api: {url}
-    key_env: NANOLB_API_KEY
-    transport: anthropic_messages
-    default_model: claude-opus-5-5
 model:
   default: gpt-6.1-sol
   provider: custom:nanolb"#

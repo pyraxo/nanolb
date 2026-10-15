@@ -181,12 +181,6 @@ pub async fn op_call(app: &Arc<App>, op: &str, a: Value) -> Result<Value, String
             };
             codex::add_account(app, cfg).view()
         }
-        "claude_login_start" => crate::claude::login_start(app, a["label"].as_str().map(str::to_string)),
-        "claude_login_finish" => crate::claude::login_finish(app, s(&a, "login_id")?, s(&a, "code")?).await?.view(),
-        "account_add_claude_token" => {
-            let cfg = crate::claude::account_from_token(s(&a, "token")?.trim(), a["label"].as_str())?;
-            codex::add_account(app, cfg).view()
-        }
         "login_start" => codex::device_login_start(app.clone(), a["label"].as_str().map(str::to_string)).await?,
         "login_poll" => {
             let id = s(&a, "login_id")?;

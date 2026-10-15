@@ -439,22 +439,6 @@ async fn handle(app: Arc<App>, kind: Kind, h: HeaderMap, body: Bytes) -> Respons
     };
     let requested = req["model"].as_str().unwrap_or_default().to_string();
     let stream = req["stream"].as_bool().unwrap_or(false);
-    if App::provider_for(&requested) == "claude" {
-        if kind != Kind::Anthropic {
-            return error(
-                kind,
-                400,
-                &format!("{requested} is served on POST /v1/messages (Anthropic Messages format)"),
-            );
-        }
-        if !key.allows_model(&requested) {
-            return error(kind, 403, &format!("model {requested} not allowed for this key"));
-        }
-        if !app.accounts.read().iter().any(|a| a.cfg.read().kind == "claude") {
-            return error(kind, 503, &format!("no claude accounts connected to serve model {requested}"));
-        }
-        return crate::claude::handle(app, key, h, req, started).await;
-    }
     let (mut up, tx) = match kind {
         Kind::Responses => (req.clone(), Tx::Pass),
         Kind::Chat | Kind::OpenRouter => match chat::to_responses(&req, kind == Kind::OpenRouter) {
@@ -579,12 +563,11 @@ pub async fn models(State(app): State<Arc<App>>, h: HeaderMap) -> Response {
         let data: Vec<Value> = app
             .model_list()
             .into_iter()
-            .filter(|(m, _)| App::provider_for(m) == "claude")
             .map(|(m, _)| json!({"type": "model", "id": m, "display_name": m, "created_at": crate::ts_iso(app.started_at)}))
             .collect();
         json!({"first_id": data.first().map(|d| d["id"].clone()), "last_id": data.last().map(|d| d["id"].clone()), "has_more": false, "data": data})
     } else {
-        json!({"object": "list", "data": app.model_list().into_iter().filter(|(m, _)| App::provider_for(m) != "claude").map(|(m, ctx)| json!({"id": m, "object": "model", "created": created, "owned_by": "openai", "context_length": ctx})).collect::<Vec<_>>()})
+        json!({"object": "list", "data": app.model_list().into_iter().map(|(m, ctx)| json!({"id": m, "object": "model", "created": created, "owned_by": "openai", "context_length": ctx})).collect::<Vec<_>>()})
     };
     axum::Json(body).into_response()
 }
@@ -594,7 +577,6 @@ pub async fn openrouter_models(State(app): State<Arc<App>>) -> Response {
     let data: Vec<Value> = app
         .model_list()
         .into_iter()
-        .filter(|(m, _)| App::provider_for(m) != "claude")
         .map(|(m, ctx)| {
             let m = m.as_str();
             let id = if m.contains('/') { m.to_string() } else { format!("openai/{m}") };

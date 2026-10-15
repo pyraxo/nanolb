@@ -2,7 +2,6 @@
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 mod admin;
-mod claude;
 mod cli;
 mod client;
 mod codex;

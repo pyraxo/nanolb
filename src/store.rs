@@ -30,7 +30,6 @@ pub struct Usage {
     pub cost: f64,
     pub latency_ms: u64,
     pub ttfb_ms: u64,
-    pub billing: &'static str,
 }
 
 const SCHEMA: &str = "
@@ -48,7 +47,6 @@ impl Store {
     pub fn open(path: &Path) -> rusqlite::Result<Self> {
         let conn = Connection::open(path)?;
         conn.execute_batch(SCHEMA)?;
-        let _ = conn.execute("ALTER TABLE usage ADD COLUMN billing TEXT NOT NULL DEFAULT ''", []);
         let writer = Connection::open(path)?;
         writer.busy_timeout(std::time::Duration::from_secs(5))?;
         let (tx, rx) = mpsc::channel::<Write>();
@@ -128,7 +126,6 @@ impl Store {
             "account" => "account_id",
             "key" => "key_id",
             "model" => "model",
-            "billing" => "billing",
             "hour" => "(ts/3600000)*3600000",
             "day" => "(ts/86400000)*86400000",
             _ => "'all'",
@@ -166,7 +163,7 @@ impl Store {
         let c = self.conn.lock();
         let mut st = c
             .prepare(
-                "SELECT ts,key_id,account_id,model,endpoint,status,input,cached,output,reasoning,cost,latency_ms,ttfb_ms,billing \
+                "SELECT ts,key_id,account_id,model,endpoint,status,input,cached,output,reasoning,cost,latency_ms,ttfb_ms \
                  FROM usage ORDER BY ts DESC LIMIT ?1",
             )
             .unwrap();
@@ -185,20 +182,11 @@ impl Store {
                 cost: r.get(10)?,
                 latency_ms: r.get(11)?,
                 ttfb_ms: r.get(12)?,
-                billing: billing_name(&r.get::<_, String>(13)?),
             })
         })
         .unwrap()
         .filter_map(Result::ok)
         .collect()
-    }
-}
-
-fn billing_name(s: &str) -> &'static str {
-    match s {
-        "plan" => "plan",
-        "extra_usage" => "extra_usage",
-        _ => "",
     }
 }
 
@@ -221,8 +209,8 @@ fn write_loop(conn: Connection, rx: mpsc::Receiver<Write>) {
             let tx = conn.unchecked_transaction()?;
             {
                 let mut st = tx.prepare_cached(
-                    "INSERT INTO usage (ts,key_id,account_id,model,endpoint,status,input,cached,output,reasoning,cost,latency_ms,ttfb_ms,billing) \
-                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
+                    "INSERT INTO usage (ts,key_id,account_id,model,endpoint,status,input,cached,output,reasoning,cost,latency_ms,ttfb_ms) \
+                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
                 )?;
                 let mut kv = tx.prepare_cached("INSERT OR REPLACE INTO kv (tbl,id,json) VALUES (?1,?2,?3)")?;
                 for w in &batch {
@@ -246,8 +234,7 @@ fn write_loop(conn: Connection, rx: mpsc::Receiver<Write>) {
                         u.reasoning,
                         u.cost,
                         u.latency_ms,
-                        u.ttfb_ms,
-                        u.billing
+                        u.ttfb_ms
                     ])?;
                 }
             }

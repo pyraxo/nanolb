@@ -1,6 +1,6 @@
 # nanolb
 
-nanolb is a small, fast load balancer for Codex (ChatGPT) accounts, Claude accounts and OpenRouter keys. It is one Rust binary with a SQLite store. It has no web GUI: you control it with the CLI, an admin RPC API and MCP.
+nanolb is a small, fast load balancer for Codex (ChatGPT) accounts and OpenRouter keys. It is one Rust binary with a SQLite store. It has no web GUI: you control it with the CLI, an admin RPC API and MCP.
 
 AI agents: read [AGENTS.md](AGENTS.md). It has the full setup and operation guide, the admin op list and a troubleshooting table.
 
@@ -21,14 +21,12 @@ nanolb up                                        # background server on 127.0.0.
 nanolb down                                      # clean stop
 nanolb login                                     # device-code login, one per account
 nanolb login --browser                           # or a browser PKCE login
-nanolb login --claude                            # Claude account: paste the code from the browser
-nanolb accounts add-claude-token sk-ant-oat...   # or a `claude setup-token` token
 nanolb accounts add-openrouter sk-or-...         # optional: OpenRouter upstream
 nanolb keys create hermes                        # prints the nlb-... key one time
 nanolb codex-config --key nlb-...                # prints client config snippets
 ```
 
-Do not use `nanolb accounts import` on the `~/.codex/auth.json` that your Codex CLI still uses. Do the same for Claude credentials that Claude Code still uses. A refresh token can be used one time only. When nanolb refreshes the token, the Codex CLI copy stops working. Use `nanolb login` or `nanolb login --claude` to give nanolb its own session.
+Do not use `nanolb accounts import` on the `~/.codex/auth.json` that your Codex CLI still uses. A refresh token can be used one time only. When nanolb refreshes the token, the Codex CLI copy stops working. Use `nanolb login` to give nanolb its own session.
 
 ## Connect a client
 
@@ -58,7 +56,7 @@ wire_api = "responses"
 env_key = "NANOLB_API_KEY"
 ```
 
-Claude Code: set `ANTHROPIC_BASE_URL=http://127.0.0.1:2455` and `ANTHROPIC_AUTH_TOKEN=nlb-...`. For Claude models in Hermes, add a second provider with `api: http://127.0.0.1:2455` and `transport: anthropic_messages` (see AGENTS.md).
+Claude Code: set `ANTHROPIC_BASE_URL=http://127.0.0.1:2455`, `ANTHROPIC_AUTH_TOKEN=nlb-...` and `ANTHROPIC_MODEL=gpt-6.1-sol`. nanolb serves Codex models on `/v1/messages`. Hermes can use the same endpoint with a provider that has `api: http://127.0.0.1:2455` and `transport: anthropic_messages` (see AGENTS.md).
 
 OpenAI SDKs: use base URL `http://127.0.0.1:2455/v1`. OpenRouter SDKs: use `http://127.0.0.1:2455/api/v1`.
 
@@ -71,7 +69,6 @@ OpenAI SDKs: use base URL `http://127.0.0.1:2455/v1`. OpenRouter SDKs: use `http
   | Model id | Provider accounts |
   |---|---|
   | contains `/` (for example `deepseek/deepseek-v4.1-flash`) | OpenRouter |
-  | starts with `claude` (for example `claude-sonnet-5-5`) | Claude accounts, only through `POST /v1/messages` |
   | all other ids (for example `gpt-6.1-sol`) | Codex |
 
   If no account of that provider is connected, nanolb returns an error.

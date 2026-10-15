@@ -49,7 +49,7 @@ Use [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
 ### Scope
 
-The scope is optional. Use the module name: `proxy`, `codex`, `claude`, `openrouter`, `state`, `store`, `admin`, `mcp`, `cli`, `tui`, `translate`, `pricing`.
+The scope is optional. Use the module name: `proxy`, `codex`, `openrouter`, `state`, `store`, `admin`, `mcp`, `cli`, `tui`, `translate`, `pricing`.
 
 ### Subject
 
@@ -71,11 +71,11 @@ The scope is optional. Use the module name: `proxy`, `codex`, `claude`, `openrou
 ### Examples
 
 ```
-feat(claude): route claude models to Claude subscription accounts
+feat(openrouter): route vendor-prefixed models to OpenRouter accounts
 
-Claude Code requests for claude-* models now go to connected Claude
-accounts through /v1/messages. Requests stay on one account per
-session, so the prompt cache stays warm.
+A model id with a slash now goes to a connected OpenRouter account.
+Requests stay on one account per session, so the prompt cache stays
+warm.
 ```
 
 ```

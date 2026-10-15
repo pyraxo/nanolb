@@ -63,26 +63,8 @@ static TOOLS: LazyLock<Vec<Tool>> = LazyLock::new(|| {
             ),
         ),
         (
-            "claude_login_start",
-            "Start a Claude (Pro/Max subscription) OAuth login. Returns {login_id, authorize_url}. A human opens authorize_url, signs in, and copies the code shown; then call claude_login_finish.",
-            schema(json!({"label": label}), &[]),
-        ),
-        (
-            "claude_login_finish",
-            "Finish a Claude login with the code the human copied from the Claude authorize page (format code#state is accepted). Adds the account.",
-            schema(
-                json!({"login_id": {"type": "string"}, "code": {"type": "string"}}),
-                &["login_id", "code"],
-            ),
-        ),
-        (
-            "account_add_claude_token",
-            "Add a Claude account from a long-lived `claude setup-token` token (sk-ant-oat...). Inference only; no refresh needed for one year.",
-            schema(json!({"token": {"type": "string"}, "label": label}), &["token"]),
-        ),
-        (
             "account_add_openrouter",
-            "Add an OpenRouter API key as an upstream account. Requests for vendor-prefixed models other than openai/ (e.g. z-ai/glm-5.3-flash, deepseek/deepseek-v4.1-flash, anthropic/claude-opus-5.5) route to OpenRouter accounts.",
+            "Add an OpenRouter API key as an upstream account. Requests for vendor-prefixed models other than openai/ (e.g. z-ai/glm-5.3-flash, deepseek/deepseek-v4.1-flash) route to OpenRouter accounts.",
             schema(json!({"api_key": {"type": "string"}, "label": label}), &["api_key"]),
         ),
         (
