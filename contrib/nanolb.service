@@ -1,0 +1,29 @@
+[Unit]
+Description=nanolb Codex load balancer
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=nanolb
+Group=nanolb
+Environment=NANOLB_HOME=/var/lib/nanolb
+Environment=NANOLB_LOG=info
+StateDirectory=nanolb
+StateDirectoryMode=0700
+ExecStart=@EXE@ serve --host @HOST@ --port @PORT@
+Restart=always
+RestartSec=2
+KillSignal=SIGTERM
+TimeoutStopSec=15
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

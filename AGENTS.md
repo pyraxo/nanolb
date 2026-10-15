@@ -40,44 +40,27 @@ nanolb status
 
 `serve` options: `--host` (env `NANOLB_HOST`, default `127.0.0.1`) and `--port` (env `NANOLB_PORT`, default `2455`). To reach nanolb from other machines, use `--host 0.0.0.0` or a tailnet IP.
 
-macOS launchd, `~/Library/LaunchAgents/so.nanolb.plist`:
+Run as a service that starts at boot and restarts on a crash:
 
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict>
-  <key>Label</key><string>so.nanolb</string>
-  <key>ProgramArguments</key><array>
-    <string>/Users/USER/.cargo/bin/nanolb</string><string>serve</string>
-  </array>
-  <key>EnvironmentVariables</key><dict>
-    <key>NANOLB_LOG</key><string>info</string>
-  </dict>
-  <key>RunAtLoad</key><true/>
-  <key>KeepAlive</key><true/>
-  <key>StandardErrorPath</key><string>/Users/USER/.nanolb/nanolb.log</string>
-</dict></plist>
+```sh
+sudo nanolb service install            # Linux: systemd system service
+nanolb service install                 # macOS: launchd agent for the current user
+nanolb service uninstall               # stop and remove the service, keep the data
+nanolb service uninstall --purge       # also remove the data (Linux: also the nanolb user and /usr/local/bin/nanolb)
 ```
 
-Load it: `launchctl load ~/Library/LaunchAgents/so.nanolb.plist`.
+`service install` accepts `--host` and `--port`. It prints JSON and waits for `/health`.
 
-Linux systemd, `~/.config/systemd/user/nanolb.service`:
-
-```ini
-[Unit]
-Description=nanolb
-After=network-online.target
-
-[Service]
-ExecStart=%h/.cargo/bin/nanolb serve
-Environment=NANOLB_LOG=info
-Restart=always
-
-[Install]
-WantedBy=default.target
-```
-
-Start it: `systemctl --user daemon-reload && systemctl --user enable --now nanolb`.
+- Linux:
+  - It copies the binary to `/usr/local/bin/nanolb`, creates the system user `nanolb`, and writes `/etc/systemd/system/nanolb.service` from `contrib/nanolb.service`.
+  - It runs `systemctl enable --now nanolb`.
+  - Data is in `/var/lib/nanolb` (mode 0700). Logs go to `journalctl -u nanolb -f`.
+  - To use the CLI on the server, run `sudo -u nanolb NANOLB_HOME=/var/lib/nanolb nanolb <command>`.
+- macOS:
+  - It writes `~/Library/LaunchAgents/moe.pyraxo.nanolb.plist` from `contrib/nanolb.plist` and loads it.
+  - Data stays in `~/.nanolb`. Logs go to `~/.nanolb/nanolb.log`.
+  - If a `nanolb up` instance runs, `service install` stops it first.
+- Under a service, use `service uninstall`, not `nanolb down`. The service manager starts a stopped server again.
 
 Stop nanolb with SIGINT (Ctrl-C or `kill -INT <pid>`). It then saves its runtime state.
 

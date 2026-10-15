@@ -2,6 +2,7 @@
 name = "nanolb"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.97"
 
 [dependencies]
 axum = { version = "0.8", default-features = false, features = ["http1", "http2", "tokio", "json", "query"] }

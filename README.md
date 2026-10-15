@@ -19,6 +19,7 @@ nanolb accepts four client API formats and sends each request to an upstream acc
 cargo install --path . --locked                 # installs to ~/.cargo/bin; reruns replace it safely
 nanolb up                                        # background server on 127.0.0.1:2455, data in ~/.nanolb
 nanolb down                                      # clean stop
+nanolb service install                           # or run as a service: launchd on macOS, systemd on Linux (as root)
 nanolb login                                     # device-code login, one per account
 nanolb login --browser                           # or a browser PKCE login
 nanolb accounts add-openrouter sk-or-...         # optional: OpenRouter upstream

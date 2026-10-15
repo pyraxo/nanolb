@@ -33,6 +33,10 @@ pub enum Cmd {
         port: u16,
     },
     Down,
+    Service {
+        #[command(subcommand)]
+        cmd: ServiceCmd,
+    },
     Status,
     Login {
         #[arg(long)]
@@ -74,6 +78,20 @@ pub enum Cmd {
     Top {
         #[arg(long, default_value_t = 2)]
         interval: u64,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum ServiceCmd {
+    Install {
+        #[arg(long, env = "NANOLB_HOST", default_value = "127.0.0.1")]
+        host: String,
+        #[arg(long, env = "NANOLB_PORT", default_value_t = 2455)]
+        port: u16,
+    },
+    Uninstall {
+        #[arg(long)]
+        purge: bool,
     },
 }
 
@@ -216,6 +234,7 @@ pub async fn run(cmd: Cmd) -> Result<(), String> {
         Cmd::Serve { .. } | Cmd::Mcp => Ok(()),
         Cmd::Up { host, port } => up(&c, host, port).await,
         Cmd::Down => down().await,
+        Cmd::Service { cmd } => service(cmd).await,
         Cmd::Status => show(&c, "status", json!({})).await,
         Cmd::Login { label, browser } => {
             let account = if browser {
@@ -380,6 +399,35 @@ async fn up(c: &Client, host: String, port: u16) -> Result<(), String> {
         }
     }
     Err(format!("nanolb did not become healthy within 5s; see {}", log_path.display()))
+}
+
+async fn service(cmd: ServiceCmd) -> Result<(), String> {
+    match cmd {
+        ServiceCmd::Install { host, port } => {
+            if running_pid().is_some() {
+                down().await?;
+            }
+            let res = crate::service::install(&host, port)?;
+            let http = reqwest::Client::new();
+            for _ in 0..50 {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                if http
+                    .get(format!("http://{host}:{port}/health"))
+                    .send()
+                    .await
+                    .is_ok_and(|r| r.status().is_success())
+                {
+                    print(&res);
+                    return Ok(());
+                }
+            }
+            Err(format!("service installed but not healthy within 5s: {res}"))
+        }
+        ServiceCmd::Uninstall { purge } => {
+            print(&crate::service::uninstall(purge)?);
+            Ok(())
+        }
+    }
 }
 
 async fn down() -> Result<(), String> {

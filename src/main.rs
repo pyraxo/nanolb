@@ -8,6 +8,7 @@ mod codex;
 mod mcp;
 mod pricing;
 mod proxy;
+mod service;
 mod sse;
 mod state;
 mod store;
