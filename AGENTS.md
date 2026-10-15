@@ -366,6 +366,8 @@ An account object has `id`, `kind` (`codex`, `claude` or `openrouter`), `email`,
 |---|---|
 | `401 invalid or missing api key` | The client key is wrong, removed or missing. Check `Authorization: Bearer nlb-...` or `x-api-key`. Run `nanolb keys ls`. |
 | `401 invalid admin token` | The admin token is wrong. Read `$NANOLB_HOME/admin_token` again. It must match the server that you call. |
+| `429 all <provider> accounts are rate limited until T` | Every account of that provider is at its limit or cooling down. The `retry-after` header gives the seconds until the first reset. Wait, or connect another account. |
+| `400 Third-party apps now draw from your extra usage, not your plan limits` | Anthropic billed the request as a third-party app (for example Hermes) and the Claude account has no extra usage left. nanolb forwards Claude requests unchanged and does not disguise them as Claude Code. Use Claude Code as the client, add extra usage at claude.ai/settings/usage, or use a Codex or OpenRouter model. The account stays in rotation, because Claude Code requests on it still work. |
 | `503 no codex accounts connected to serve model X` | No account of that provider. Connect one (section 4). Check the model id against section 3. A `claude*` id needs a Claude account. An id with `/` needs an OpenRouter account. |
 | `400 X is served on POST /v1/messages` | A `claude*` model was sent to a non-Anthropic endpoint. Use `/v1/messages`. |
 | `403 model X not allowed for this key` | The key has a `models` list. Run `nanolb keys update <id> --model X`. |

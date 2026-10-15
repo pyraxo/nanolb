@@ -44,6 +44,17 @@ pub fn error(kind: Kind, status: u16, msg: &str) -> Response {
     (StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY), axum::Json(body)).into_response()
 }
 
+pub fn limited(kind: Kind, provider: &str, until: i64) -> Response {
+    let secs = ((until - now_ms()) / 1000).max(1);
+    let mut r = error(
+        kind,
+        429,
+        &format!("all {provider} accounts are rate limited until {}", crate::ts_iso(until)),
+    );
+    r.headers_mut().insert(header::RETRY_AFTER, HeaderValue::from(secs));
+    r
+}
+
 pub fn auth(app: &App, h: &HeaderMap) -> Option<Arc<Key>> {
     let bearer = h
         .get(header::AUTHORIZATION)
@@ -477,6 +488,10 @@ async fn handle(app: Arc<App>, kind: Kind, h: HeaderMap, body: Bytes) -> Respons
     let session = format!("{}\u{1f}{provider}\u{1f}{cache}", key.cfg.id);
     let upstream = match send(&app, &key, provider, (kind == Kind::Responses).then_some(&h), &up, &session).await {
         Ok(u) => u,
+        Err((503, _)) if let Some(until) = app.next_available(provider, &key.cfg.accounts) => {
+            tracing::warn!(endpoint = kind.endpoint(), %model, until = %crate::ts_iso(until), "all accounts rate limited");
+            return limited(kind, provider, until);
+        }
         Err((status, msg)) => {
             tracing::warn!(endpoint = kind.endpoint(), %model, status, error = %msg, "request failed");
             app.record(

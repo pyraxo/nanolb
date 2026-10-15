@@ -599,6 +599,29 @@ impl App {
         Some(chosen)
     }
 
+    pub fn next_available(&self, kind: &str, allowed: &[String]) -> Option<i64> {
+        let now = now_ms();
+        let mut earliest: Option<i64> = None;
+        for a in self.accounts.read().iter() {
+            let c = a.cfg.read();
+            if c.kind != kind || !c.enabled || !(allowed.is_empty() || allowed.contains(&a.id)) {
+                continue;
+            }
+            let r = a.rl.lock();
+            let mut t = a.cooldown_until.load(Relaxed);
+            for (used, reset) in [(r.primary_used, r.primary_reset_at), (r.secondary_used, r.secondary_reset_at)] {
+                if used >= 100.0 && reset > now {
+                    t = t.max(reset);
+                }
+            }
+            if t <= now {
+                return None;
+            }
+            earliest = Some(earliest.map_or(t, |e| e.min(t)));
+        }
+        earliest
+    }
+
     pub fn persist_runtime(&self) {
         for a in self.accounts.read().iter() {
             let err = a.last_error.lock().clone();
@@ -667,6 +690,15 @@ mod tests {
     fn burn_picks_soonest_weekly_reset() {
         let app = app_with(Strategy::Burn, &[("a", 10.0, 5_000), ("b", 90.0, 9_000), ("c", 50.0, 1_000)]);
         assert_eq!(app.pick("codex", &[], &[], None).unwrap().id, "c");
+    }
+
+    #[test]
+    fn next_available_is_earliest_reset_only_when_every_account_is_limited() {
+        let app = app_with(Strategy::Preserve, &[("a", 100.0, 5_000), ("b", 100.0, 1_000)]);
+        let b_reset = app.account("b").unwrap().rl.lock().secondary_reset_at;
+        assert_eq!(app.next_available("codex", &[]), Some(b_reset));
+        app.account("a").unwrap().rl.lock().secondary_used = 40.0;
+        assert_eq!(app.next_available("codex", &[]), None);
     }
 
     #[test]

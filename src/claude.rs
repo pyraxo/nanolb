@@ -19,12 +19,6 @@ const TOKEN_URL: &str = "https://platform.claude.com/v1/oauth/token";
 const REDIRECT_URI: &str = "https://platform.claude.com/oauth/code/callback";
 const SCOPES: &str = "user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload";
 const OAUTH_BETA: &str = "oauth-2025-04-20";
-const IDENTITY: &str = "You are Claude Code, Anthropic's official CLI for Claude.";
-const IDENTITIES: &[&str] = &[
-    "You are Claude Code, Anthropic's official CLI for Claude.",
-    "You are Claude Code, Anthropic's official CLI for Claude, running within the Claude Agent SDK.",
-    "You are a Claude agent, built on Anthropic's Claude Agent SDK.",
-];
 const PRICES: &[(&str, [f64; 5])] = &[
     ("claude-opus", [4.0, 20.0, 0.2, 5.0, 8.0]),
     ("claude-sonnet", [2.0, 10.0, 0.1, 2.5, 4.0]),
@@ -196,26 +190,6 @@ fn limited_until(h: &reqwest::header::HeaderMap) -> i64 {
         .unwrap_or(now_ms() + 60_000)
 }
 
-fn ensure_identity(body: &mut Value) {
-    let blocks = match body.get("system") {
-        Some(Value::String(s)) => vec![json!({"type": "text", "text": s})],
-        Some(Value::Array(a)) => a.clone(),
-        _ => vec![],
-    };
-    let has = blocks
-        .iter()
-        .any(|b| b["text"].as_str().is_some_and(|t| IDENTITIES.iter().any(|i| t.starts_with(i))));
-    if has && !body["system"].is_string() {
-        return;
-    }
-    let mut out = Vec::with_capacity(blocks.len() + 1);
-    if !has {
-        out.push(json!({"type": "text", "text": IDENTITY}));
-    }
-    out.extend(blocks);
-    body["system"] = Value::Array(out);
-}
-
 fn session_key(h: &HeaderMap, body: &Value) -> String {
     if let Some(s) = h
         .get("x-claude-code-session-id")
@@ -320,8 +294,7 @@ pub async fn warmup(app: &Arc<App>, a: &Arc<Account>) -> Value {
         return json!({"ok": false, "error": e});
     }
     let started = now_ms();
-    let mut body = json!({"model": model, "max_tokens": 1, "messages": [{"role": "user", "content": prompt}]});
-    ensure_identity(&mut body);
+    let body = json!({"model": model, "max_tokens": 1, "messages": [{"role": "user", "content": prompt}]});
     let res = match request(app, a, &HeaderMap::new(), Bytes::from(body.to_string())).send().await {
         Ok(r) => r,
         Err(e) => return json!({"ok": false, "error": e.to_string()}),
@@ -354,10 +327,9 @@ pub async fn warmup(app: &Arc<App>, a: &Arc<Account>) -> Value {
     json!({"ok": true, "status": status, "at": ts_iso(now_ms())})
 }
 
-pub async fn handle(app: Arc<App>, key: Arc<Key>, h: HeaderMap, mut req: Value, started: i64) -> Response {
+pub async fn handle(app: Arc<App>, key: Arc<Key>, h: HeaderMap, req: Value, started: i64) -> Response {
     let model = req["model"].as_str().unwrap_or_default().to_string();
     let stream = req["stream"].as_bool().unwrap_or(false);
-    ensure_identity(&mut req);
     let session = format!("{}\u{1f}claude\u{1f}{}", key.cfg.id, session_key(&h, &req));
     let body = Bytes::from(serde_json::to_vec(&req).unwrap());
     let first_timeout = Duration::from_secs(app.settings().first_event_timeout_secs.max(5));
@@ -408,7 +380,6 @@ pub async fn handle(app: Arc<App>, key: Arc<Key>, h: HeaderMap, mut req: Value, 
             let until = match status {
                 429 => Some(limit_reset),
                 401 => Some(now_ms() + 300_000),
-                400 if msg.contains("extra usage") => Some(now_ms() + 600_000),
                 500.. => Some(now_ms() + 5_000),
                 _ => None,
             };
@@ -507,27 +478,17 @@ pub async fn handle(app: Arc<App>, key: Arc<Key>, h: HeaderMap, mut req: Value, 
         Some(&key),
         crate::codex::usage_row(&key.cfg.id, "", &model, "anthropic", last.0, &Value::Null, started, now_ms()),
     );
+    if tried.is_empty()
+        && let Some(until) = app.next_available("claude", &key.cfg.accounts)
+    {
+        return crate::proxy::limited(Kind::Anthropic, "claude", until);
+    }
     error(Kind::Anthropic, last.0, &last.1)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn identity_block_is_prepended_once_and_existing_identity_is_kept() {
-        let mut plain = json!({"system": "Be terse."});
-        ensure_identity(&mut plain);
-        assert_eq!(
-            plain["system"],
-            json!([{"type": "text", "text": IDENTITY}, {"type": "text", "text": "Be terse."}])
-        );
-
-        let cc = json!([{"type": "text", "text": "x-anthropic-billing-header: cc_version=2.1.300"}, {"type": "text", "text": IDENTITY}]);
-        let mut from_claude_code = json!({"system": cc.clone()});
-        ensure_identity(&mut from_claude_code);
-        assert_eq!(from_claude_code["system"], cc);
-    }
 
     #[test]
     fn cost_counts_cache_reads_and_writes_at_their_own_rates() {
