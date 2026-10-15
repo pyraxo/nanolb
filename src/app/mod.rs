@@ -6,7 +6,6 @@ pub(crate) mod keys;
 pub(crate) mod logins;
 pub(crate) mod models;
 mod pick;
-pub(crate) mod pricing;
 pub(crate) mod sessions;
 pub(crate) mod settings;
 

@@ -4,7 +4,7 @@ mod stream;
 mod tests;
 
 use super::TranslateError;
-use crate::app::pricing::Rates;
+use crate::pricing::Rates;
 use serde_json::{Map, Value, json};
 
 pub(crate) use response::from_response;

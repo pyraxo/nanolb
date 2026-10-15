@@ -1,5 +1,5 @@
 use super::{Store, StoreError};
-use crate::app::pricing::Pricing;
+use crate::pricing::Pricing;
 use crate::time::{now_ms, ts_iso};
 use rusqlite::params;
 use rusqlite::types::Value as Sql;

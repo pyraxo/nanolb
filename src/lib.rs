@@ -3,6 +3,7 @@ mod cli;
 mod control;
 mod home;
 mod id;
+mod pricing;
 mod server;
 mod sse;
 mod store;
