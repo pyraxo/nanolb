@@ -1,5 +1,5 @@
-pub mod anthropic;
-pub mod chat;
+pub(crate) mod anthropic;
+pub(crate) mod chat;
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum TranslateError {
