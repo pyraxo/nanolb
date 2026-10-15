@@ -11,7 +11,6 @@ use axum::body::Bytes;
 use axum::extract::{Multipart, State};
 use axum::response::{IntoResponse, Response};
 use base64::Engine;
-use eventsource_stream::Eventsource;
 use futures_util::StreamExt;
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -95,25 +94,25 @@ fn upstream_body(s: &Settings, opts: &Value, model: &str, edit: &Edit<'_>) -> Re
 }
 
 async fn collect(res: reqwest::Response, idle: Duration) -> (Option<Value>, Vec<Value>) {
-    let mut events = res.bytes_stream().eventsource();
-    let mut done: Option<Value> = None;
+    let mut body = res.bytes_stream();
+    let mut sse = crate::sse::Splitter::new(|_| true, false);
     let mut items: Vec<Value> = vec![];
-    while let Ok(Some(Ok(ev))) = tokio::time::timeout(idle, events.next()).await {
-        let v: Value = serde_json::from_str(&ev.data).unwrap_or_default();
-        match v["type"].as_str().unwrap_or_default() {
-            "response.output_item.done" => items.push(v["item"].clone()),
-            "response.completed" | "response.failed" | "response.incomplete" => {
-                done = Some(v);
-                break;
+    while let Ok(Some(Ok(chunk))) = tokio::time::timeout(idle, body.next()).await {
+        sse.feed(chunk);
+        while let Some(ev) = sse.pop() {
+            let v: Value = serde_json::from_str(&ev.data).unwrap_or_default();
+            match v["type"].as_str().unwrap_or_default() {
+                "response.output_item.done" => items.push(v["item"].clone()),
+                "response.completed" | "response.failed" | "response.incomplete" => return (Some(v), items),
+                "error" => {
+                    let failed = json!({"type": "response.failed", "response": {"error": v["error"].clone()}});
+                    return (Some(failed), items);
+                }
+                _ => {}
             }
-            "error" => {
-                done = Some(json!({"type": "response.failed", "response": {"error": v["error"].clone()}}));
-                break;
-            }
-            _ => {}
         }
     }
-    (done, items)
+    (None, items)
 }
 
 async fn images(app: &Arc<App>, key: &Key, opts: &Value, edit: &Edit<'_>, started: i64) -> Result<Response, ApiError> {

@@ -63,12 +63,16 @@ pub(crate) async fn warmup(app: &Arc<App>, a: &Arc<Account>) -> Value {
 
 async fn completed_usage(res: reqwest::Response) -> Value {
     let mut usage = Value::Null;
-    let mut events = eventsource_stream::Eventsource::eventsource(res.bytes_stream());
-    while let Some(Ok(ev)) = events.next().await {
-        if (ev.event == "response.completed" || ev.data.contains("\"response.completed\""))
-            && let Ok(v) = serde_json::from_str::<Value>(&ev.data)
-        {
-            usage = v["response"]["usage"].clone();
+    let mut body = res.bytes_stream();
+    let mut sse = crate::sse::Splitter::new(|_| true, false);
+    while let Some(Ok(chunk)) = body.next().await {
+        sse.feed(chunk);
+        while let Some(ev) = sse.pop() {
+            if (ev.event == "response.completed" || ev.data.contains("\"response.completed\""))
+                && let Ok(v) = serde_json::from_str::<Value>(&ev.data)
+            {
+                usage = v["response"]["usage"].clone();
+            }
         }
     }
     usage
