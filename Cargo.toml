@@ -5,9 +5,9 @@ edition = "2024"
 rust-version = "1.97"
 
 [dependencies]
-axum = { version = "0.8", default-features = false, features = ["http1", "http2", "tokio", "json", "query"] }
+axum = { version = "0.8", default-features = false, features = ["http1", "http2", "tokio", "json", "query", "multipart"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "signal", "sync", "io-std", "io-util"] }
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "http2", "stream", "json", "gzip", "brotli", "zstd"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "http2", "stream", "json", "gzip", "brotli", "zstd", "multipart"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rusqlite = { version = "0.37", features = ["bundled"] }

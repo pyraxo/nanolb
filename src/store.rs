@@ -197,6 +197,10 @@ fn endpoint_name(s: &str) -> &'static str {
         "openrouter" => "openrouter",
         "anthropic" => "anthropic",
         "warmup" => "warmup",
+        "files" => "files",
+        "transcribe" => "transcribe",
+        "images" => "images",
+        "embeddings" => "embeddings",
         _ => "other",
     }
 }
