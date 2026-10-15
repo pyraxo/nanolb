@@ -130,6 +130,15 @@ impl Account {
     }
 }
 
+fn plan_weights(plan: &str) -> [f64; 2] {
+    match plan {
+        "free" => [0.0, 0.15],
+        "pro" | "enterprise" => [6.67, 6.67],
+        "prolite" => [5.0, 5.0],
+        _ => [1.0, 1.0],
+    }
+}
+
 fn rl_view(r: &RateLimit) -> Value {
     let iso = |t: i64| (t > 0).then(|| crate::ts_iso(t));
     serde_json::json!({
@@ -571,6 +580,67 @@ impl App {
             self.store.put_async("sticky", sess, &serde_json::json!({"a": chosen.id, "t": now}));
         }
         Some(chosen)
+    }
+
+    pub fn pool_rate_headers(&self, allowed: &[String]) -> Vec<(&'static str, String)> {
+        const NAMES: [[&str; 3]; 2] = [
+            [
+                "x-codex-primary-used-percent",
+                "x-codex-primary-window-minutes",
+                "x-codex-primary-reset-at",
+            ],
+            [
+                "x-codex-secondary-used-percent",
+                "x-codex-secondary-window-minutes",
+                "x-codex-secondary-reset-at",
+            ],
+        ];
+        let now = now_ms();
+        let mut agg = [(0.0f64, 0.0f64, i64::MAX, 0i64); 2];
+        for a in self.accounts.read().iter() {
+            let weights = {
+                let c = a.cfg.read();
+                if c.kind != "codex" || !c.enabled || !(allowed.is_empty() || allowed.contains(&a.id)) {
+                    continue;
+                }
+                plan_weights(&c.plan)
+            };
+            let r = a.rl.lock();
+            if r.updated_at == 0 {
+                continue;
+            }
+            let mut wins = [
+                (r.primary_used, r.primary_window_min, r.primary_reset_at),
+                (r.secondary_used, r.secondary_window_min, r.secondary_reset_at),
+            ];
+            if wins[1].1 <= 0 && wins[0].1 >= 10_080 {
+                wins = [(0.0, 0, 0), wins[0]];
+            }
+            for (i, (used, mins, reset)) in wins.into_iter().enumerate() {
+                if mins <= 0 {
+                    continue;
+                }
+                let g = &mut agg[i];
+                g.3 = g.3.max(mins);
+                g.0 += weights[i];
+                if reset > now {
+                    g.1 += weights[i] * used;
+                    g.2 = g.2.min(reset);
+                }
+            }
+        }
+        let mut out = vec![];
+        for (i, (cap, used, reset, mins)) in agg.into_iter().enumerate() {
+            if mins == 0 || cap <= 0.0 {
+                continue;
+            }
+            out.push((NAMES[i][0], format!("{}", (used / cap * 100.0).round() / 100.0)));
+            out.push((NAMES[i][1], mins.to_string()));
+            if reset != i64::MAX {
+                out.push((NAMES[i][2], (reset / 1000).to_string()));
+            }
+        }
+        out
     }
 
     pub fn next_available(&self, kind: &str, allowed: &[String]) -> Option<i64> {

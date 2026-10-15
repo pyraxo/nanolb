@@ -106,7 +106,9 @@ fn passthrough_headers(h: &HeaderMap) -> HeaderMap {
     let mut out = HeaderMap::new();
     for (k, v) in h {
         let n = k.as_str();
-        if PASS_HEADERS.contains(&n) || n.starts_with("x-codex-") {
+        if PASS_HEADERS.contains(&n)
+            || (n.starts_with("x-codex-") && !n.starts_with("x-codex-primary-") && !n.starts_with("x-codex-secondary-"))
+        {
             out.append(k.clone(), v.clone());
         }
     }
@@ -248,7 +250,14 @@ async fn send(
             last = (status, msg);
             continue;
         }
-        let headers = passthrough_headers(res.headers());
+        let mut headers = passthrough_headers(res.headers());
+        if provider == "codex" {
+            for (k, v) in app.pool_rate_headers(&key.cfg.accounts) {
+                if let Ok(v) = HeaderValue::from_str(&v) {
+                    headers.insert(k, v);
+                }
+            }
+        }
         let mut events: Events = Box::pin(res.bytes_stream().eventsource());
         match tokio::time::timeout(first_timeout, events.next()).await {
             Ok(Some(Ok(ev))) if is_failure(&ev) => {
