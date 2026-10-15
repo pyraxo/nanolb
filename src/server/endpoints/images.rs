@@ -1,7 +1,7 @@
 use super::audio::read_form;
-use super::forward::{Call, Sent, forward, json_response, json_shape};
+use super::forward::{Call, Sent, json_response, json_shape};
 use super::{Req, bad_request, prelude, require_model};
-use crate::app::{App, Key, Provider};
+use crate::app::{App, Key, Provider, Settings};
 use crate::server::error::{ApiError, ApiFormat};
 use crate::store::Endpoint;
 use crate::time::now_ms;
@@ -69,7 +69,7 @@ fn tool_definition(opts: &Value, model: &str, edit: bool) -> Value {
     tool
 }
 
-fn upstream_body(app: &App, opts: &Value, model: &str, edit: &Edit<'_>) -> Result<Bytes, ApiError> {
+fn upstream_body(s: &Settings, opts: &Value, model: &str, edit: &Edit<'_>) -> Result<Bytes, ApiError> {
     let Some(prompt) = opts["prompt"].as_str().filter(|p| !p.is_empty()) else {
         return Err(bad_request("prompt is required"));
     };
@@ -89,7 +89,7 @@ fn upstream_body(app: &App, opts: &Value, model: &str, edit: &Edit<'_>) -> Resul
         content.push(json!({"type": "input_image", "image_url": url}));
     }
     let mut up = json!({
-        "model": app.settings().warmup_model, "instructions": IMAGE_INSTRUCTIONS,
+        "model": s.warmup_model, "instructions": IMAGE_INSTRUCTIONS,
         "input": [{"type": "message", "role": "user", "content": content}],
         "tools": [tool], "tool_choice": {"type": "image_generation"},
     });
@@ -121,18 +121,10 @@ async fn collect(res: reqwest::Response, idle: Duration) -> (Option<Value>, Vec<
 
 async fn images(app: &Arc<App>, key: &Key, opts: &Value, edit: &Edit<'_>, started: i64) -> Result<Response, ApiError> {
     let model = image_model(opts, key)?;
-    let body = upstream_body(app, opts, &model, edit)?;
-    let req = Req {
-        app,
-        key,
-        endpoint: Endpoint::Images,
-        model: &model,
-        started,
-    };
+    let req = Req::new(app, key, Endpoint::Images, &model, started);
+    let body = upstream_body(&req.settings, opts, &model, edit)?;
     let call = Call::post(Provider::Codex, "/codex/responses", "text/event-stream");
-    let sent = forward(app, key, &call, &json_shape(&body))
-        .await
-        .map_err(|e| req.failed(Provider::Codex, e))?;
+    let sent = req.send(&call, &json_shape(&body)).await?;
     let Sent { acc, res, guard, ttfb } = sent;
     if res.status().as_u16() >= 400 {
         let status = res.status().as_u16();
@@ -141,7 +133,7 @@ async fn images(app: &Arc<App>, key: &Key, opts: &Value, edit: &Edit<'_>, starte
         req.record(&acc.id, status, &Value::Null, ttfb);
         return Ok(json_response(status, Bytes::from(text)));
     }
-    let idle = Duration::from_secs(app.settings().idle_timeout_secs.max(30));
+    let idle = Duration::from_secs(req.settings.idle_timeout_secs.max(30));
     let (done, items) = collect(res, idle).await;
     drop(guard);
     let usage = done.as_ref().map_or(Value::Null, |d| d["response"]["usage"].clone());

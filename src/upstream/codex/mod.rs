@@ -12,7 +12,7 @@ pub(crate) use poller::spawn_background;
 pub(crate) use warmup::warmup;
 pub(crate) use wham::{fetch_usage, wham};
 
-use crate::app::{Account, App};
+use crate::app::{Account, App, Settings};
 use axum::http::HeaderMap;
 use serde_json::{Map, Value, json};
 
@@ -70,8 +70,14 @@ fn has_system_message(o: &Map<String, Value>) -> bool {
         .is_some_and(|i| i.iter().any(|m| m["role"] == "developer" || m["role"] == "system"))
 }
 
-pub(crate) fn request(app: &App, a: &Account, method: reqwest::Method, path: &str, client: Option<&HeaderMap>) -> reqwest::RequestBuilder {
-    let s = app.settings();
+pub(crate) fn request(
+    app: &App,
+    s: &Settings,
+    a: &Account,
+    method: reqwest::Method,
+    path: &str,
+    client: Option<&HeaderMap>,
+) -> reqwest::RequestBuilder {
     let c = a.cfg.read();
     let mut rb = app
         .http

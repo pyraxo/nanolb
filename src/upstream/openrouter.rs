@@ -1,12 +1,12 @@
 use super::UpstreamError;
-use crate::app::{Account, AccountCfg, App, Provider};
+use crate::app::{Account, AccountCfg, App, Provider, Settings};
 use crate::id::sha256_hex;
 use crate::time::now_ms;
 use serde_json::Value;
 
-pub(crate) fn request(app: &App, acc: &Account, method: reqwest::Method, path: &str) -> reqwest::RequestBuilder {
+pub(crate) fn request(app: &App, s: &Settings, acc: &Account, method: reqwest::Method, path: &str) -> reqwest::RequestBuilder {
     app.http
-        .request(method, format!("{}{path}", app.settings().openrouter_base))
+        .request(method, format!("{}{path}", s.openrouter_base))
         .bearer_auth(&acc.cfg.read().access_token)
         .header("http-referer", "https://github.com/pyraxo/nanolb")
         .header("x-title", "nanolb")

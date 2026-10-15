@@ -1,7 +1,7 @@
 pub(crate) mod codex;
 pub(crate) mod openrouter;
 
-use crate::app::{Account, App, Provider};
+use crate::app::{Account, App, Provider, Settings};
 use crate::store::StoreError;
 use crate::time::now_ms;
 use axum::http::HeaderMap;
@@ -131,13 +131,14 @@ pub(crate) fn retry_until(status: u16, err: &Value) -> Option<i64> {
 
 pub(crate) fn request(
     app: &App,
+    s: &Settings,
     acc: &Account,
     method: reqwest::Method,
     path: &str,
     client: Option<&HeaderMap>,
 ) -> reqwest::RequestBuilder {
     match acc.provider() {
-        Provider::OpenRouter => openrouter::request(app, acc, method, path),
-        Provider::Codex | Provider::Other => codex::request(app, acc, method, path, client),
+        Provider::OpenRouter => openrouter::request(app, s, acc, method, path),
+        Provider::Codex | Provider::Other => codex::request(app, s, acc, method, path, client),
     }
 }

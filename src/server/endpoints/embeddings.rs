@@ -1,4 +1,4 @@
-use super::forward::{Call, JSON, forward, json_response, json_shape};
+use super::forward::{Call, JSON, json_response, json_shape};
 use super::{Req, bad_request, prelude, require_model};
 use crate::app::{App, Key, Provider};
 use crate::server::error::{ApiError, ApiFormat};
@@ -33,17 +33,9 @@ pub(super) async fn embeddings(
             "no openrouter accounts connected to serve embeddings",
         ));
     }
-    let req = Req {
-        app: &app,
-        key: &key,
-        endpoint: Endpoint::Embeddings,
-        model,
-        started,
-    };
+    let req = Req::new(&app, &key, Endpoint::Embeddings, model, started);
     let call = Call::post(Provider::OpenRouter, "/embeddings", JSON);
-    let sent = forward(&app, &key, &call, &json_shape(&body))
-        .await
-        .map_err(|e| req.failed(Provider::OpenRouter, e))?;
+    let sent = req.send(&call, &json_shape(&body)).await?;
     let status = sent.res.status().as_u16();
     let bytes = sent.res.bytes().await.unwrap_or_default();
     let v: Value = serde_json::from_slice(&bytes).unwrap_or_default();

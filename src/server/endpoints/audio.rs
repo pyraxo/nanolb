@@ -1,4 +1,4 @@
-use super::forward::{Call, JSON, forward, pass};
+use super::forward::{Call, JSON, pass};
 use super::{Req, bad_request, prelude, require_model};
 use crate::app::{App, Key, Provider};
 use crate::server::error::ApiError;
@@ -76,13 +76,7 @@ async fn transcribe(app: Arc<App>, key: Arc<Key>, mp: Multipart, v1: bool) -> Re
     };
     let prompt = form.text.get("prompt");
     let content_type = file.content_type.clone().unwrap_or_else(|| "application/octet-stream".into());
-    let req = Req {
-        app: &app,
-        key: &key,
-        endpoint: Endpoint::Transcribe,
-        model: TRANSCRIBE_MODEL,
-        started,
-    };
+    let req = Req::new(&app, &key, Endpoint::Transcribe, TRANSCRIBE_MODEL, started);
     let call = Call::post(Provider::Codex, "/transcribe", JSON);
     let shape = |rb: reqwest::RequestBuilder| {
         let mut f = Form::new().part("file", part(&file.data, &file.file_name, &content_type));
@@ -91,9 +85,7 @@ async fn transcribe(app: Arc<App>, key: Arc<Key>, mp: Multipart, v1: bool) -> Re
         }
         rb.multipart(f)
     };
-    let sent = forward(&app, &key, &call, &shape)
-        .await
-        .map_err(|e| req.failed(Provider::Codex, e))?;
+    let sent = req.send(&call, &shape).await?;
     req.record(&sent.acc.id, sent.res.status().as_u16(), &Value::Null, sent.ttfb);
     Ok(pass(sent))
 }

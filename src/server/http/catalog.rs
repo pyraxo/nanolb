@@ -85,14 +85,15 @@ pub(crate) async fn codex_models(
     RawQuery(q): RawQuery,
 ) -> Result<Response, ApiError> {
     let format = ApiFormat::Responses;
+    let s = app.settings();
     let acc = app
-        .pick(Provider::Codex, &key.cfg.accounts, &[], None)
+        .pick(&s, Provider::Codex, &key.cfg.accounts, &[], None)
         .ok_or_else(|| ApiError::from((format, UpstreamError::NoAccount)))?;
     codex::ensure_fresh(&app, &acc, false)
         .await
         .map_err(|e| ApiError::new(format, 502, e.to_string()))?;
-    let query = q.unwrap_or_else(|| format!("client_version={}", app.settings().codex_version));
-    let res = codex::request(&app, &acc, reqwest::Method::GET, &format!("/codex/models?{query}"), Some(&h))
+    let query = q.unwrap_or_else(|| format!("client_version={}", s.codex_version));
+    let res = codex::request(&app, &s, &acc, reqwest::Method::GET, &format!("/codex/models?{query}"), Some(&h))
         .header(header::ACCEPT, "application/json")
         .send()
         .await

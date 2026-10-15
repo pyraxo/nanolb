@@ -36,8 +36,9 @@ pub(crate) async fn fetch_usage(app: &App, a: &Account) -> Result<Value, Upstrea
 }
 
 pub(super) async fn fetch_models(app: &App, a: &Account) -> Result<(), UpstreamError> {
-    let path = format!("/codex/models?client_version={}", app.settings().codex_version);
-    let res = request(app, a, Method::GET, &path, None)
+    let s = app.settings();
+    let path = format!("/codex/models?client_version={}", s.codex_version);
+    let res = request(app, &s, a, Method::GET, &path, None)
         .header("accept", "application/json")
         .timeout(Duration::from_secs(10))
         .send()

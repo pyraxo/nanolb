@@ -1,6 +1,6 @@
 use super::App;
 use super::account::{Account, Provider, RateLimit};
-use super::settings::Strategy;
+use super::settings::{Settings, Strategy};
 use crate::time::now_ms;
 use std::sync::Arc;
 use std::sync::atomic::Ordering::Relaxed;
@@ -11,9 +11,15 @@ fn used_percent(r: &RateLimit, now: i64) -> i64 {
 }
 
 impl App {
-    pub(crate) fn pick(&self, provider: Provider, allowed: &[String], exclude: &[String], session: Option<&str>) -> Option<Arc<Account>> {
+    pub(crate) fn pick(
+        &self,
+        s: &Settings,
+        provider: Provider,
+        allowed: &[String],
+        exclude: &[String],
+        session: Option<&str>,
+    ) -> Option<Arc<Account>> {
         let now = now_ms();
-        let s = self.settings.load();
         let accs = self.accounts.read();
         let ok = |a: &&Arc<Account>| {
             a.provider() == provider && (allowed.is_empty() || allowed.contains(&a.id)) && !exclude.contains(&a.id) && a.available(now)
@@ -99,7 +105,8 @@ mod tests {
 
     fn pick(app: &App, exclude: &[&str]) -> Option<String> {
         let exclude: Vec<String> = exclude.iter().map(|s| (*s).to_owned()).collect();
-        app.pick(Provider::Codex, &[], &exclude, None).map(|a| a.id.clone())
+        app.pick(&app.settings(), Provider::Codex, &[], &exclude, None)
+            .map(|a| a.id.clone())
     }
 
     #[test]

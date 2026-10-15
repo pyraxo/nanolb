@@ -31,7 +31,11 @@ pub(crate) async fn warmup(app: &Arc<App>, a: &Arc<Account>) -> Value {
         "reasoning": {"effort": "low"},
     });
     prepare_body(&mut body);
-    let res = match request(app, a, Method::POST, "/codex/responses", None).json(&body).send().await {
+    let res = match request(app, &settings, a, Method::POST, "/codex/responses", None)
+        .json(&body)
+        .send()
+        .await
+    {
         Ok(r) => r,
         Err(e) => return json!({"ok": false, "error": e.to_string()}),
     };
@@ -52,7 +56,7 @@ pub(crate) async fn warmup(app: &Arc<App>, a: &Arc<Account>) -> Value {
         started,
         ttfb: started,
     };
-    app.record(None, Usage::new(meta, status, &usage, &app.settings().pricing));
+    app.record(None, Usage::new(meta, status, &usage, &settings.pricing));
     mark_fired(app, a);
     json!({"ok": true, "status": status, "at": ts_iso(now_ms()), "usage": usage})
 }

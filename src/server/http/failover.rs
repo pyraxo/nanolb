@@ -69,7 +69,7 @@ pub(super) async fn send(
     let mut first_acc: Option<String> = None;
     let stripped = OnceCell::new();
     for _ in 0..job.settings.max_attempts.max(1) {
-        let Some(acc) = job.app.pick(provider, &job.key.cfg.accounts, &tried, Some(session)) else {
+        let Some(acc) = job.app.pick(&job.settings, provider, &job.key.cfg.accounts, &tried, Some(session)) else {
             break;
         };
         let first_id = first_acc.get_or_insert_with(|| acc.id.clone());
@@ -151,9 +151,9 @@ impl Attempt<'_> {
 
     fn request(&self, acc: &Account, h: Option<&HeaderMap>) -> RequestBuilder {
         let mut rb = if self.provider == Provider::OpenRouter {
-            upstream::request(&self.job.app, acc, Method::POST, "/responses", None)
+            upstream::request(&self.job.app, &self.job.settings, acc, Method::POST, "/responses", None)
         } else {
-            let rb = upstream::request(&self.job.app, acc, Method::POST, "/codex/responses", h);
+            let rb = upstream::request(&self.job.app, &self.job.settings, acc, Method::POST, "/codex/responses", h);
             let has_session = h.is_some_and(|h| h.contains_key("session_id") || h.contains_key("session-id"));
             if has_session || self.cache_key.is_empty() {
                 rb

@@ -5,13 +5,14 @@ mod forward;
 mod images;
 mod usage;
 
-use crate::app::{App, Key, Provider};
+use crate::app::{App, Key, Provider, Settings};
 use crate::server::error::{ApiError, ApiFormat};
 use crate::store::{Endpoint, Usage, UsageMeta};
 use crate::time::now_ms;
 use crate::upstream::UpstreamError;
 use axum::Router;
 use axum::routing::{get, post};
+use forward::{Call, Sent, Shape, forward};
 use serde_json::Value;
 use std::sync::Arc;
 
@@ -53,13 +54,31 @@ fn require_model(key: &Key, model: &str) -> Result<(), ApiError> {
 
 struct Req<'a> {
     app: &'a Arc<App>,
+    settings: Arc<Settings>,
     key: &'a Key,
     endpoint: Endpoint,
     model: &'a str,
     started: i64,
 }
 
-impl Req<'_> {
+impl<'a> Req<'a> {
+    fn new(app: &'a Arc<App>, key: &'a Key, endpoint: Endpoint, model: &'a str, started: i64) -> Self {
+        Self {
+            app,
+            settings: app.settings(),
+            key,
+            endpoint,
+            model,
+            started,
+        }
+    }
+
+    async fn send(&self, call: &Call<'_>, shape: Shape<'_>) -> Result<Sent, ApiError> {
+        forward(self.app, &self.settings, self.key, call, shape)
+            .await
+            .map_err(|e| self.failed(call.provider, e))
+    }
+
     fn record(&self, account: &str, status: u16, usage: &Value, ttfb: i64) {
         let meta = UsageMeta {
             key_id: &self.key.cfg.id,
@@ -70,7 +89,7 @@ impl Req<'_> {
             ttfb,
         };
         self.app
-            .record(Some(self.key), Usage::new(meta, status, usage, &self.app.settings().pricing));
+            .record(Some(self.key), Usage::new(meta, status, usage, &self.settings.pricing));
     }
 
     fn failed(&self, provider: Provider, e: UpstreamError) -> ApiError {

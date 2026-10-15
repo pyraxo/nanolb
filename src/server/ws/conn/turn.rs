@@ -43,7 +43,8 @@ impl Conn {
         if v.get("prompt_cache_key").is_none() {
             v["prompt_cache_key"] = Value::String(self.cache.clone().unwrap_or_default());
         }
-        let warm = self.app.settings().prewarm
+        self.settings = self.app.settings();
+        let warm = self.settings.prewarm
             && !self.created
             && v["generate"] != Value::Bool(false)
             && v["previous_response_id"].as_str().is_none_or(str::is_empty);
@@ -154,7 +155,7 @@ impl Conn {
             return false;
         };
         let msg = v["error"]["message"].as_str().unwrap_or("upstream error").to_owned();
-        let max = self.app.settings().max_attempts.max(1);
+        let max = self.settings.max_attempts.max(1);
         if self.pending.as_ref().is_some_and(|p| p.retries + 1 < max) {
             self.drop_upstream(until, &msg);
             tracing::warn!(status, error = %msg, "upstream websocket error before first event, failing over");
@@ -233,9 +234,8 @@ impl Conn {
     }
 
     pub(in crate::server::ws) async fn run(mut self, mut client: WebSocket) {
-        let s = self.app.settings();
-        let first = Duration::from_secs(s.first_event_timeout_secs.max(5));
-        let idle = Duration::from_secs(s.idle_timeout_secs.max(30));
+        let first = Duration::from_secs(self.settings.first_event_timeout_secs.max(5));
+        let idle = Duration::from_secs(self.settings.idle_timeout_secs.max(30));
         loop {
             let wait = self.pending.as_ref().map(|p| if p.ttfb.is_none() { first } else { idle });
             let up = &mut self.up;

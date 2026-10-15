@@ -2,7 +2,7 @@ mod turn;
 
 use super::frames::{error_frame, handshake, pass_headers};
 use super::{Link, exhausted, header_session, limited_until};
-use crate::app::{Account, App, Key, Provider, Sessions};
+use crate::app::{Account, App, Key, Provider, Sessions, Settings};
 use crate::server::error::ApiError;
 use crate::store::{Endpoint, Usage, UsageMeta};
 use crate::time::{now_ms, ts_iso};
@@ -35,6 +35,7 @@ struct Pending {
 
 pub(super) struct Conn {
     app: Arc<App>,
+    settings: Arc<Settings>,
     key: Arc<Key>,
     h: HeaderMap,
     cache: Option<String>,
@@ -47,6 +48,7 @@ pub(super) struct Conn {
 impl Conn {
     pub(super) fn new(app: Arc<App>, key: Arc<Key>, h: HeaderMap) -> Self {
         Self {
+            settings: app.settings(),
             app,
             key,
             cache: header_session(&h),
@@ -70,7 +72,7 @@ impl Conn {
     }
 
     async fn connect(&mut self) -> Result<HeaderMap, UpstreamError> {
-        let s = self.app.settings();
+        let s = Arc::clone(&self.settings);
         let session = self.session();
         let timeout = Duration::from_secs(s.first_event_timeout_secs.max(5));
         let mut refreshed: Vec<String> = vec![];
@@ -78,7 +80,7 @@ impl Conn {
         for _ in 0..s.max_attempts.max(1) {
             let Some(acc) = self
                 .app
-                .pick(Provider::Codex, &self.key.cfg.accounts, &self.tried, session.as_deref())
+                .pick(&s, Provider::Codex, &self.key.cfg.accounts, &self.tried, session.as_deref())
             else {
                 break;
             };
@@ -87,7 +89,7 @@ impl Conn {
                 last = e;
                 continue;
             }
-            let mut req = handshake(&self.app, &acc, &self.h, None)?;
+            let mut req = handshake(&self.app, &s, &acc, &self.h, None)?;
             let hs = req.headers_mut();
             hs.insert("openai-beta", HeaderValue::from_static(BETA));
             if !hs.contains_key("session_id")
@@ -168,7 +170,7 @@ impl Conn {
             started: p.started,
             ttfb: p.ttfb.unwrap_or(p.started),
         };
-        let row = Usage::new(meta, status, &resp["usage"], &self.app.settings().pricing);
+        let row = Usage::new(meta, status, &resp["usage"], &self.settings.pricing);
         self.app.record(Some(&self.key), row);
     }
 
@@ -182,7 +184,7 @@ impl Conn {
             started: now,
             ttfb: now,
         };
-        let row = Usage::new(meta, status, &Value::Null, &self.app.settings().pricing);
+        let row = Usage::new(meta, status, &Value::Null, &self.settings.pricing);
         self.app.record(Some(&self.key), row);
     }
 
@@ -200,7 +202,7 @@ impl Conn {
             }
             self.tried.push(l.acc.id.clone());
         }
-        let max = self.app.settings().max_attempts.max(1);
+        let max = self.settings.max_attempts.max(1);
         match self.pending.as_mut() {
             Some(p) if p.ttfb.is_none() && p.retries + 1 < max => {
                 p.retries += 1;

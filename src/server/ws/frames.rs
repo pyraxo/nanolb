@@ -1,4 +1,4 @@
-use crate::app::{Account, App};
+use crate::app::{Account, App, Settings};
 use crate::time::now_ms;
 use crate::upstream::{UpstreamError, codex};
 use axum::extract::ws;
@@ -22,8 +22,8 @@ pub(super) fn ws_url(http: &str) -> String {
     }
 }
 
-pub(super) fn handshake(app: &App, acc: &Account, client: &HeaderMap, url: Option<&str>) -> Result<Request, UpstreamError> {
-    let built = codex::request(app, acc, reqwest::Method::GET, "/codex/responses", Some(client))
+pub(super) fn handshake(app: &App, s: &Settings, acc: &Account, client: &HeaderMap, url: Option<&str>) -> Result<Request, UpstreamError> {
+    let built = codex::request(app, s, acc, reqwest::Method::GET, "/codex/responses", Some(client))
         .build()
         .map_err(UpstreamError::Handshake)?;
     let url = url.map_or_else(|| ws_url(built.url().as_str()), str::to_owned);
