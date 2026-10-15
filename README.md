@@ -163,3 +163,7 @@ nanolb also runs as an MCP server, either over stdio (`claude mcp add nanolb -- 
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the checks every change has to pass and the commit conventions.
+
+## License
+
+nanolb is available under either the [MIT license](LICENSE-MIT) or the [Apache License 2.0](LICENSE-APACHE), at your option.

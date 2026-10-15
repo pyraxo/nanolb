@@ -3,6 +3,10 @@ name = "nanolb"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.97"
+description = "A small, fast load balancer for Codex (ChatGPT) subscriptions"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/pyraxo/nanolb"
+readme = "README.md"
 
 [dependencies]
 axum = { version = "0.8", default-features = false, features = ["http1", "http2", "tokio", "json", "query", "multipart", "ws"] }

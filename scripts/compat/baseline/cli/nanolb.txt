@@ -1,5 +1,7 @@
 $ nanolb --help
 exit 0
+A small, fast load balancer for Codex (ChatGPT) subscriptions
+
 Usage: nanolb <COMMAND>
 
 Commands:
