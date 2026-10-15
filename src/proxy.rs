@@ -561,11 +561,12 @@ pub async fn models(State(app): State<Arc<App>>, h: HeaderMap) -> Response {
         let data: Vec<Value> = app
             .model_list()
             .into_iter()
+            .filter(|(m, _)| App::provider_for(m) == "claude")
             .map(|(m, _)| json!({"type": "model", "id": m, "display_name": m, "created_at": crate::ts_iso(app.started_at)}))
             .collect();
         json!({"first_id": data.first().map(|d| d["id"].clone()), "last_id": data.last().map(|d| d["id"].clone()), "has_more": false, "data": data})
     } else {
-        json!({"object": "list", "data": app.model_list().into_iter().map(|(m, ctx)| json!({"id": m, "object": "model", "created": created, "owned_by": "openai", "context_length": ctx})).collect::<Vec<_>>()})
+        json!({"object": "list", "data": app.model_list().into_iter().filter(|(m, _)| App::provider_for(m) != "claude").map(|(m, ctx)| json!({"id": m, "object": "model", "created": created, "owned_by": "openai", "context_length": ctx})).collect::<Vec<_>>()})
     };
     axum::Json(body).into_response()
 }
@@ -575,10 +576,12 @@ pub async fn openrouter_models(State(app): State<Arc<App>>) -> Response {
     let data: Vec<Value> = app
         .model_list()
         .into_iter()
+        .filter(|(m, _)| App::provider_for(m) != "claude")
         .map(|(m, ctx)| {
             let m = m.as_str();
+            let id = if m.contains('/') { m.to_string() } else { format!("openai/{m}") };
             json!({
-                "id": format!("openai/{m}"), "canonical_slug": format!("openai/{m}"), "name": format!("OpenAI: {m}"),
+                "id": id, "canonical_slug": id, "name": id,
                 "created": app.started_at / 1000, "description": "", "context_length": ctx,
                 "architecture": {"modality": "text+image->text", "input_modalities": ["text", "image"], "output_modalities": ["text"], "tokenizer": "GPT", "instruct_type": null},
                 "pricing": {"prompt": per_tok(m, 0), "completion": per_tok(m, 2), "input_cache_read": per_tok(m, 1), "request": "0", "image": "0", "web_search": "0", "internal_reasoning": "0"},

@@ -305,7 +305,7 @@ pub async fn op_call(app: &Arc<App>, op: &str, a: Value) -> Result<Value, String
         "models" => json!(
             app.model_list()
                 .into_iter()
-                .map(|(m, ctx)| json!({"id": m, "context_window": ctx}))
+                .map(|(m, ctx)| json!({"provider": App::provider_for(&m), "id": m, "context_window": ctx}))
                 .collect::<Vec<_>>()
         ),
         _ => return Err(format!("unknown op `{op}`")),

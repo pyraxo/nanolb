@@ -2,6 +2,7 @@ use serde_json::Value;
 use std::collections::HashMap;
 
 pub const DEFAULT_MODELS: &[&str] = &[
+    "gpt-6.1-sol",
     "gpt-6-sol",
     "gpt-6-astra",
     "gpt-6-luna",
