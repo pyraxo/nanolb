@@ -3,7 +3,7 @@ use crate::server::auth::api_key;
 use crate::server::error::{ApiError, ApiFormat};
 use crate::store::{Endpoint, Usage, UsageMeta};
 use crate::time::now_ms;
-use crate::upstream::{self, codex};
+use crate::upstream::{self, UpstreamError, codex};
 use axum::Router;
 use axum::body::{Body, Bytes};
 use axum::extract::{Multipart, Path, State};
@@ -77,11 +77,11 @@ struct Sent {
 
 type Shape<'a> = &'a (dyn Fn(reqwest::RequestBuilder) -> reqwest::RequestBuilder + Sync);
 
-async fn forward(app: &Arc<App>, key: &Key, c: &Call<'_>, shape: Shape<'_>) -> Result<Sent, (u16, String)> {
+async fn forward(app: &Arc<App>, key: &Key, c: &Call<'_>, shape: Shape<'_>) -> Result<Sent, UpstreamError> {
     let first_timeout = Duration::from_secs(app.settings().first_event_timeout_secs.max(5));
     let mut tried: Vec<String> = vec![];
     let mut refreshed: Vec<String> = vec![];
-    let mut last = (503u16, "no available accounts".to_string());
+    let mut last = UpstreamError::NoAccount;
     for _ in 0..app.settings().max_attempts.max(1) {
         let acc = match c.pinned {
             Some(id) => {
@@ -93,7 +93,10 @@ async fn forward(app: &Arc<App>, key: &Key, c: &Call<'_>, shape: Shape<'_>) -> R
                     .get(id)
                     .filter(|a| key.cfg.accounts.is_empty() || key.cfg.accounts.contains(&a.id));
                 if acc.is_none() {
-                    last = (404, "the account that owns this file is not available".into());
+                    last = UpstreamError::Status {
+                        status: 404,
+                        message: "the account that owns this file is not available".into(),
+                    };
                 }
                 acc
             }
@@ -102,14 +105,19 @@ async fn forward(app: &Arc<App>, key: &Key, c: &Call<'_>, shape: Shape<'_>) -> R
         let Some(acc) = acc else { break };
         if let Err(e) = codex::ensure_fresh(app, &acc, false).await {
             tried.push(acc.id.clone());
-            last = (502, e.to_string());
+            last = e;
             continue;
         }
         let guard = acc.acquire();
         let rb = upstream::request(app, &acc, c.method.clone(), c.path, None);
         let mut req = match shape(rb).build() {
             Ok(r) => r,
-            Err(e) => return Err((500, format!("build request: {e}"))),
+            Err(e) => {
+                return Err(UpstreamError::Status {
+                    status: 500,
+                    message: format!("build request: {e}"),
+                });
+            }
         };
         req.headers_mut().insert(header::ACCEPT, HeaderValue::from_static(c.accept));
         let res = match tokio::time::timeout(first_timeout, app.http.execute(req)).await {
@@ -117,13 +125,13 @@ async fn forward(app: &Arc<App>, key: &Key, c: &Call<'_>, shape: Shape<'_>) -> R
             Ok(Err(e)) => {
                 acc.fail(now_ms() + 15_000, format!("connect: {e}"));
                 tried.push(acc.id.clone());
-                last = (502, format!("upstream connect failed: {e}"));
+                last = UpstreamError::Connect(e);
                 continue;
             }
             Err(_) => {
                 acc.fail(now_ms() + 15_000, "timed out waiting for response headers".into());
                 tried.push(acc.id.clone());
-                last = (504, "upstream timed out".into());
+                last = UpstreamError::Timeout;
                 continue;
             }
         };
@@ -155,7 +163,7 @@ async fn forward(app: &Arc<App>, key: &Key, c: &Call<'_>, shape: Shape<'_>) -> R
             }
             tracing::warn!(account = %acc.id, status, error = %msg, "upstream error, failing over");
             tried.push(acc.id.clone());
-            last = (status, msg);
+            last = UpstreamError::Status { status, message: msg };
             continue;
         }
         return Ok(Sent {
@@ -168,24 +176,16 @@ async fn forward(app: &Arc<App>, key: &Key, c: &Call<'_>, shape: Shape<'_>) -> R
     Err(last)
 }
 
-#[expect(clippy::too_many_arguments, reason = "interim until the endpoints owner splits this module")]
-fn failed(
-    app: &App,
-    key: &Key,
-    provider: Provider,
-    endpoint: Endpoint,
-    model: &str,
-    started: i64,
-    (status, msg): (u16, String),
-) -> Response {
-    tracing::warn!(endpoint = endpoint.as_str(), status, error = %msg, "request failed");
+fn failed(app: &App, key: &Key, provider: Provider, endpoint: Endpoint, model: &str, started: i64, e: UpstreamError) -> Response {
+    let status = e.status();
+    tracing::warn!(endpoint = endpoint.as_str(), status, error = %e, "request failed");
     record(app, key, "", model, endpoint, status, &Value::Null, started, now_ms());
     if status == 503
         && let Some(until) = app.accounts.next_available(provider, &key.cfg.accounts)
     {
         return ApiError::limited(ApiFormat::Chat, provider, until).into_response();
     }
-    ApiError::new(ApiFormat::Chat, status, &msg).into_response()
+    ApiError::from((ApiFormat::Chat, e)).into_response()
 }
 
 fn pass(sent: Sent) -> Response {

@@ -5,7 +5,7 @@ use crate::sse;
 use crate::store::{Usage, UsageMeta};
 use crate::time::now_ms;
 use crate::translate::{anthropic, chat};
-use crate::upstream::{self, Failure, classify, codex, limit_reset_from_error};
+use crate::upstream::{self, Failure, UpstreamError, classify, codex, limit_reset_from_error};
 use axum::body::{Body, Bytes};
 use axum::extract::{RawQuery, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
@@ -87,7 +87,7 @@ async fn send(
     h: Option<&HeaderMap>,
     up: &Value,
     session: &str,
-) -> Result<Upstream, (u16, String)> {
+) -> Result<Upstream, UpstreamError> {
     let raw = serde_json::to_vec(up).unwrap();
     let (body, compressed) = match provider == Provider::Codex && app.settings().compress_upstream {
         true => match zstd::stream::encode_all(&raw[..], 3) {
@@ -100,7 +100,7 @@ async fn send(
     let first_timeout = std::time::Duration::from_secs(app.settings().first_event_timeout_secs.max(5));
     let mut tried: Vec<String> = vec![];
     let mut refreshed: Vec<String> = vec![];
-    let mut last = (503u16, "no available accounts".to_string());
+    let mut last = UpstreamError::NoAccount;
     let mut first_acc: Option<String> = None;
     let stripped = std::cell::OnceCell::new();
     for _ in 0..app.settings().max_attempts.max(1) {
@@ -118,7 +118,7 @@ async fn send(
         };
         if let Err(e) = codex::ensure_fresh(app, &acc, false).await {
             tried.push(acc.id.clone());
-            last = (502, e.to_string());
+            last = e;
             continue;
         }
         let guard = acc.acquire();
@@ -134,14 +134,14 @@ async fn send(
                 acc.observe(None);
                 acc.fail(now_ms() + 15_000, format!("connect: {e}"));
                 tried.push(acc.id.clone());
-                last = (502, format!("upstream connect failed: {e}"));
+                last = UpstreamError::Connect(e);
                 continue;
             }
             Err(_) => {
                 acc.observe(None);
                 acc.fail(now_ms() + 15_000, "timed out waiting for response headers".into());
                 tried.push(acc.id.clone());
-                last = (504, "upstream timed out".into());
+                last = UpstreamError::Timeout;
                 continue;
             }
         };
@@ -165,7 +165,7 @@ async fn send(
             match classify(status, &v["error"]) {
                 Failure::Client => {
                     tracing::warn!(account = %acc.id, status, error = %msg, "upstream rejected request");
-                    return Err((status, msg));
+                    return Err(UpstreamError::Status { status, message: msg });
                 }
                 Failure::Retry(until) => {
                     acc.observe(None);
@@ -176,7 +176,7 @@ async fn send(
             }
             tracing::warn!(account = %acc.id, status, error = %msg, "upstream error, failing over");
             tried.push(acc.id.clone());
-            last = (status, msg);
+            last = UpstreamError::Status { status, message: msg };
             continue;
         }
         let mut headers = passthrough_headers(res.headers());
@@ -200,14 +200,14 @@ async fn send(
                 };
                 let msg = err["message"].as_str().unwrap_or("upstream failed").to_string();
                 match classify(0, &err) {
-                    Failure::Client => return Err((400, msg)),
+                    Failure::Client => return Err(UpstreamError::Status { status: 400, message: msg }),
                     Failure::Retry(until) => {
                         acc.observe(None);
                         acc.fail(until, msg.clone())
                     }
                 }
                 tried.push(acc.id.clone());
-                last = (502, msg);
+                last = UpstreamError::FirstEvent(msg);
             }
             Ok(Some(Ok(first))) => {
                 let ttfb = now_ms();
@@ -229,7 +229,7 @@ async fn send(
                 acc.observe(None);
                 acc.fail(now_ms() + 10_000, msg.clone());
                 tried.push(acc.id.clone());
-                last = (502, msg);
+                last = UpstreamError::FirstEvent(msg);
             }
         }
     }
@@ -482,12 +482,16 @@ async fn handle(app: Arc<App>, kind: ApiFormat, h: HeaderMap, body: Bytes) -> Re
     }
     let upstream = match send(&app, &key, provider, (kind == ApiFormat::Responses).then_some(&h), &up, &session).await {
         Ok(u) => u,
-        Err((503, _)) if let Some(until) = app.accounts.next_available(provider, &key.cfg.accounts) => {
+        Err(e)
+            if e.status() == 503
+                && let Some(until) = app.accounts.next_available(provider, &key.cfg.accounts) =>
+        {
             tracing::warn!(endpoint = kind.endpoint().as_str(), %model, until = %crate::time::ts_iso(until), "all accounts rate limited");
             return ApiError::limited(kind, provider, until).into_response();
         }
-        Err((status, msg)) => {
-            tracing::warn!(endpoint = kind.endpoint().as_str(), %model, status, error = %msg, "request failed");
+        Err(e) => {
+            let status = e.status();
+            tracing::warn!(endpoint = kind.endpoint().as_str(), %model, status, error = %e, "request failed");
             let meta = UsageMeta {
                 key_id: &key.cfg.id,
                 account_id: "",
@@ -497,7 +501,7 @@ async fn handle(app: Arc<App>, kind: ApiFormat, h: HeaderMap, body: Bytes) -> Re
                 ttfb: now_ms(),
             };
             app.record(Some(&key), Usage::new(meta, status, &Value::Null, &app.settings().pricing));
-            return ApiError::new(kind, status, &msg).into_response();
+            return ApiError::from((kind, e)).into_response();
         }
     };
     let job = Job {
