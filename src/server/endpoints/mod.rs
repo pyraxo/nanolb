@@ -1,810 +1,91 @@
-use crate::app::{Account, App, Inflight, Key, Provider, Window};
+mod audio;
+mod embeddings;
+mod files;
+mod forward;
+mod images;
+mod usage;
+
+use crate::app::{App, Key, Provider};
 use crate::server::auth::api_key;
 use crate::server::error::{ApiError, ApiFormat};
 use crate::store::{Endpoint, Usage, UsageMeta};
 use crate::time::now_ms;
-use crate::upstream::{self, UpstreamError, codex};
+use crate::upstream::UpstreamError;
 use axum::Router;
-use axum::body::{Body, Bytes};
-use axum::extract::{Multipart, Path, State};
-use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
-use axum::response::{IntoResponse, Response};
+use axum::http::HeaderMap;
 use axum::routing::{get, post};
-use base64::Engine;
-use eventsource_stream::Eventsource;
-use futures_util::StreamExt;
-use reqwest::multipart::{Form, Part};
-use serde_json::{Value, json};
-use std::collections::HashMap;
+use serde_json::Value;
 use std::sync::Arc;
-use std::time::Duration;
 
-const TRANSCRIBE_MODEL: &str = "gpt-4o-transcribe";
-const DEFAULT_IMAGE_MODEL: &str = "gpt-image-2";
-const IMAGE_INSTRUCTIONS: &str = "You are an image generator. When asked, you MUST call the image_generation tool exactly once and return only that tool call. Do not produce any additional text output. Mirror the user's request verbatim into the tool's prompt argument.";
-const MASK_HINT: &str = "\n\n(The final attached image is a transparent mask: only modify the regions where the mask is non-transparent.)";
-
-pub fn routes() -> Router<Arc<App>> {
+pub(crate) fn routes() -> Router<Arc<App>> {
     Router::new()
-        .route("/backend-api/wham/usage", get(pool_usage))
-        .route("/api/codex/usage", get(pool_usage))
-        .route("/v1/usage", get(key_usage))
-        .route("/backend-api/files", post(files_create))
-        .route("/backend-api/files/{id}/uploaded", post(files_finalize))
-        .route("/backend-api/transcribe", post(transcribe_backend))
-        .route("/v1/audio/transcriptions", post(transcribe_v1))
-        .route("/v1/images/generations", post(images_generations))
-        .route("/backend-api/codex/images/generations", post(images_generations))
-        .route("/v1/images/edits", post(images_edits_multipart))
-        .route("/backend-api/codex/images/edits", post(images_edits_json))
-        .route("/v1/embeddings", post(embeddings))
+        .route("/backend-api/wham/usage", get(usage::pool_usage))
+        .route("/api/codex/usage", get(usage::pool_usage))
+        .route("/v1/usage", get(usage::key_usage))
+        .route("/backend-api/files", post(files::create))
+        .route("/backend-api/files/{id}/uploaded", post(files::finalize))
+        .route("/backend-api/transcribe", post(audio::transcribe_backend))
+        .route("/v1/audio/transcriptions", post(audio::transcribe_v1))
+        .route("/v1/images/generations", post(images::generations))
+        .route("/backend-api/codex/images/generations", post(images::generations))
+        .route("/v1/images/edits", post(images::edits_multipart))
+        .route("/backend-api/codex/images/edits", post(images::edits_json))
+        .route("/v1/embeddings", post(embeddings::embeddings))
 }
 
-fn prelude(app: &App, h: &HeaderMap) -> Result<Arc<Key>, Box<Response>> {
-    let key = api_key(app, h).ok_or_else(|| Box::new(ApiError::new(ApiFormat::Chat, 401, "invalid or missing api key").into_response()))?;
-    key.check(now_ms())
-        .map_err(|e| Box::new(ApiError::from((ApiFormat::Chat, e)).into_response()))?;
+fn prelude(app: &App, h: &HeaderMap) -> Result<Arc<Key>, ApiError> {
+    let key = api_key(app, h).ok_or_else(|| ApiError::unauthorized(ApiFormat::Chat))?;
+    key.check(now_ms()).map_err(|e| ApiError::from((ApiFormat::Chat, e)))?;
     Ok(key)
 }
 
-#[expect(clippy::too_many_arguments, reason = "interim until the endpoints owner splits this module")]
-fn record(app: &App, key: &Key, account: &str, model: &str, endpoint: Endpoint, status: u16, usage: &Value, started: i64, ttfb: i64) {
-    let meta = UsageMeta {
-        key_id: &key.cfg.id,
-        account_id: account,
-        model,
-        endpoint,
-        started,
-        ttfb,
-    };
-    app.record(Some(key), Usage::new(meta, status, usage, &app.settings().pricing));
+fn bad_request(msg: impl Into<String>) -> ApiError {
+    ApiError::new(ApiFormat::Chat, 400, msg)
 }
 
-struct Call<'a> {
-    provider: Provider,
-    method: reqwest::Method,
-    path: &'a str,
-    accept: &'static str,
-    pinned: Option<&'a str>,
+fn require_model(key: &Key, model: &str) -> Result<(), ApiError> {
+    if key.allows_model(model) {
+        Ok(())
+    } else {
+        Err(ApiError::new(
+            ApiFormat::Chat,
+            403,
+            format!("model {model} not allowed for this key"),
+        ))
+    }
 }
 
-struct Sent {
-    acc: Arc<Account>,
-    res: reqwest::Response,
-    guard: Inflight,
-    ttfb: i64,
+struct Req<'a> {
+    app: &'a Arc<App>,
+    key: &'a Key,
+    endpoint: Endpoint,
+    model: &'a str,
+    started: i64,
 }
 
-type Shape<'a> = &'a (dyn Fn(reqwest::RequestBuilder) -> reqwest::RequestBuilder + Sync);
-
-async fn forward(app: &Arc<App>, key: &Key, c: &Call<'_>, shape: Shape<'_>) -> Result<Sent, UpstreamError> {
-    let first_timeout = Duration::from_secs(app.settings().first_event_timeout_secs.max(5));
-    let mut tried: Vec<String> = vec![];
-    let mut refreshed: Vec<String> = vec![];
-    let mut last = UpstreamError::NoAccount;
-    for _ in 0..app.settings().max_attempts.max(1) {
-        let acc = match c.pinned {
-            Some(id) => {
-                if tried.iter().any(|t| t == id) {
-                    break;
-                }
-                let acc = app
-                    .accounts
-                    .get(id)
-                    .filter(|a| key.cfg.accounts.is_empty() || key.cfg.accounts.contains(&a.id));
-                if acc.is_none() {
-                    last = UpstreamError::Status {
-                        status: 404,
-                        message: "the account that owns this file is not available".into(),
-                    };
-                }
-                acc
-            }
-            None => app.pick(c.provider, &key.cfg.accounts, &tried, None),
+impl Req<'_> {
+    fn record(&self, account: &str, status: u16, usage: &Value, ttfb: i64) {
+        let meta = UsageMeta {
+            key_id: &self.key.cfg.id,
+            account_id: account,
+            model: self.model,
+            endpoint: self.endpoint,
+            started: self.started,
+            ttfb,
         };
-        let Some(acc) = acc else { break };
-        if let Err(e) = codex::ensure_fresh(app, &acc, false).await {
-            tried.push(acc.id.clone());
-            last = e;
-            continue;
-        }
-        let guard = acc.acquire();
-        let rb = upstream::request(app, &acc, c.method.clone(), c.path, None);
-        let mut req = match shape(rb).build() {
-            Ok(r) => r,
-            Err(e) => {
-                return Err(UpstreamError::Status {
-                    status: 500,
-                    message: format!("build request: {e}"),
-                });
-            }
-        };
-        req.headers_mut().insert(header::ACCEPT, HeaderValue::from_static(c.accept));
-        let res = match tokio::time::timeout(first_timeout, app.http.execute(req)).await {
-            Ok(Ok(r)) => r,
-            Ok(Err(e)) => {
-                acc.fail(now_ms() + 15_000, format!("connect: {e}"));
-                tried.push(acc.id.clone());
-                last = UpstreamError::Connect(e);
-                continue;
-            }
-            Err(_) => {
-                acc.fail(now_ms() + 15_000, "timed out waiting for response headers".into());
-                tried.push(acc.id.clone());
-                last = UpstreamError::Timeout;
-                continue;
-            }
-        };
-        if c.provider == Provider::Codex {
-            codex::apply_rate_headers(&acc, res.headers());
-        }
-        let status = res.status().as_u16();
-        if status == 401 && !refreshed.contains(&acc.id) {
-            refreshed.push(acc.id.clone());
-            if codex::ensure_fresh(app, &acc, true).await.is_ok() {
-                continue;
-            }
-        }
-        if matches!(status, 401 | 403 | 429 | 500..=599) {
-            let text = res.text().await.unwrap_or_default();
-            let v: Value = serde_json::from_str(&text).unwrap_or_default();
-            let msg = v["error"]["message"]
-                .as_str()
-                .or(v["detail"].as_str())
-                .map_or_else(|| text.chars().take(500).collect(), str::to_string);
-            let until = match status {
-                429 => upstream::limit_reset_from_error(&v).unwrap_or(now_ms() + 60_000),
-                401 => now_ms() + 300_000,
-                403 => 0,
-                _ => now_ms() + 5_000,
-            };
-            if until > 0 {
-                acc.fail(until, format!("{status}: {msg}"));
-            }
-            tracing::warn!(account = %acc.id, status, error = %msg, "upstream error, failing over");
-            tried.push(acc.id.clone());
-            last = UpstreamError::Status { status, message: msg };
-            continue;
-        }
-        return Ok(Sent {
-            acc,
-            res,
-            guard,
-            ttfb: now_ms(),
-        });
+        self.app
+            .record(Some(self.key), Usage::new(meta, status, usage, &self.app.settings().pricing));
     }
-    Err(last)
-}
 
-fn failed(app: &App, key: &Key, provider: Provider, endpoint: Endpoint, model: &str, started: i64, e: UpstreamError) -> Response {
-    let status = e.status();
-    tracing::warn!(endpoint = endpoint.as_str(), status, error = %e, "request failed");
-    record(app, key, "", model, endpoint, status, &Value::Null, started, now_ms());
-    if status == 503
-        && let Some(until) = app.accounts.next_available(provider, &key.cfg.accounts)
-    {
-        return ApiError::limited(ApiFormat::Chat, provider, until).into_response();
-    }
-    ApiError::from((ApiFormat::Chat, e)).into_response()
-}
-
-fn pass(sent: Sent) -> Response {
-    let Sent { res, guard, .. } = sent;
-    let status = StatusCode::from_u16(res.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
-    let ct = res.headers().get(header::CONTENT_TYPE).cloned();
-    let body = Body::from_stream(res.bytes_stream().map(move |c| {
-        let _ = &guard;
-        c
-    }));
-    let mut out = Response::new(body);
-    *out.status_mut() = status;
-    if let Some(ct) = ct {
-        out.headers_mut()
-            .insert(header::CONTENT_TYPE, HeaderValue::from_bytes(ct.as_bytes()).unwrap());
-    }
-    out
-}
-
-fn json_response(status: u16, body: Bytes) -> Response {
-    let mut r = (StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY), body).into_response();
-    r.headers_mut()
-        .insert(header::CONTENT_TYPE, HeaderValue::from_static("application/json"));
-    r
-}
-
-fn window_value(vals: &[(f64, i64, i64)], now: i64) -> Value {
-    let known: Vec<_> = vals.iter().filter(|v| v.1 > 0).collect();
-    if known.is_empty() {
-        return Value::Null;
-    }
-    let used = known.iter().map(|v| if v.2 > now { v.0 } else { 0.0 }).sum::<f64>() / known.len() as f64;
-    let reset = known.iter().map(|v| v.2).filter(|r| *r > now).min().unwrap_or(0);
-    json!({
-        "used_percent": used,
-        "limit_window_seconds": known.iter().map(|v| v.1).max().unwrap_or(0) * 60,
-        "reset_after_seconds": if reset > 0 { (reset - now) / 1000 } else { 0 },
-        "reset_at": reset / 1000,
-    })
-}
-
-fn pool(app: &App, key: &Key) -> (Value, Value, bool, String) {
-    let now = now_ms();
-    let accs: Vec<Arc<Account>> = app
-        .accounts
-        .read()
-        .iter()
-        .filter(|a| {
-            let c = a.cfg.read();
-            c.provider == Provider::Codex && c.enabled && (key.cfg.accounts.is_empty() || key.cfg.accounts.contains(&a.id))
-        })
-        .cloned()
-        .collect();
-    let (mut p, mut s) = (vec![], vec![]);
-    for a in &accs {
-        let r = a.rl.lock();
-        p.push((r.primary_used, r.primary_window_min, r.primary_reset_at));
-        s.push((r.secondary_used, r.secondary_window_min, r.secondary_reset_at));
-    }
-    let plan = accs.first().map_or("plus".to_string(), |a| a.cfg.read().plan.clone());
-    (
-        window_value(&p, now),
-        window_value(&s, now),
-        accs.iter().any(|a| a.available(now)),
-        plan,
-    )
-}
-
-async fn pool_usage(State(app): State<Arc<App>>, h: HeaderMap) -> Response {
-    let key = match prelude(&app, &h) {
-        Ok(k) => k,
-        Err(r) => return *r,
-    };
-    let (primary, secondary, allowed, plan) = pool(&app, &key);
-    axum::Json(json!({
-        "plan_type": plan,
-        "rate_limit": {
-            "allowed": allowed, "limit_reached": !allowed,
-            "primary_window": primary, "secondary_window": secondary,
-        },
-        "credits": null,
-        "additional_rate_limits": [],
-    }))
-    .into_response()
-}
-
-fn key_limits(key: &Key) -> Vec<Value> {
-    let usage = key.view()["usage"].clone();
-    let mut out = vec![];
-    for l in &key.cfg.limits {
-        let c = &usage[format!("{:?}", l.window).to_lowercase()];
-        let start = c["start"].as_i64().unwrap_or(0);
-        let reset = match l.window {
-            Window::Day => Some(start + 86_400_000),
-            Window::Week => Some(start + 7 * 86_400_000),
-            Window::Month => Some(Window::Month.start(start + 32 * 86_400_000)),
-            Window::Total => None,
-        };
-        let dims = [
-            ("total_tokens", l.max_tokens, c["tokens"].as_u64()),
-            (
-                "cost_usd",
-                l.max_cost_usd.map(|m| (m * 1e6) as u64),
-                c["cost"].as_f64().map(|x| (x * 1e6) as u64),
-            ),
-            ("requests", l.max_requests, c["requests"].as_u64()),
-        ];
-        for (ty, max, cur) in dims {
-            let Some(max) = max else { continue };
-            let cur = cur.unwrap_or(0).min(max);
-            out.push(json!({
-                "limit_type": ty, "limit_window": format!("{:?}", l.window).to_lowercase(),
-                "max_value": max, "current_value": cur, "remaining_value": max - cur,
-                "model_filter": null, "reset_at": reset.map(crate::time::ts_iso), "source": "api_key_limit",
-            }));
-        }
-    }
-    out
-}
-
-async fn key_usage(State(app): State<Arc<App>>, h: HeaderMap) -> Response {
-    let key = match prelude(&app, &h) {
-        Ok(k) => k,
-        Err(r) => return *r,
-    };
-    let total = key.view()["usage"]["total"].clone();
-    let cached = app.store.usage_summary(0, "key").unwrap_or_default();
-    let cached = cached
-        .as_array()
-        .and_then(|rows| rows.iter().find(|r| r["group"] == key.cfg.id.as_str()))
-        .and_then(|r| r["cached_tokens"].as_i64())
-        .unwrap_or(0);
-    let (primary, secondary, _, _) = pool(&app, &key);
-    axum::Json(json!({
-        "request_count": total["requests"], "total_tokens": total["tokens"],
-        "cached_input_tokens": cached, "total_cost_usd": total["cost"],
-        "limits": key_limits(&key), "upstream_limits": [],
-        "account_pool_usage": {"primary": primary["used_percent"], "secondary": secondary["used_percent"]},
-    }))
-    .into_response()
-}
-
-async fn files_create(State(app): State<Arc<App>>, h: HeaderMap, body: Bytes) -> Response {
-    let started = now_ms();
-    let key = match prelude(&app, &h) {
-        Ok(k) => k,
-        Err(r) => return *r,
-    };
-    let call = Call {
-        provider: Provider::Codex,
-        method: reqwest::Method::POST,
-        path: "/files",
-        accept: "application/json",
-        pinned: None,
-    };
-    let sent = match forward(&app, &key, &call, &|rb| {
-        rb.header(header::CONTENT_TYPE, "application/json").body(body.clone())
-    })
-    .await
-    {
-        Ok(s) => s,
-        Err(e) => return failed(&app, &key, Provider::Codex, Endpoint::Files, "files-create", started, e),
-    };
-    let status = sent.res.status().as_u16();
-    let bytes = sent.res.bytes().await.unwrap_or_default();
-    if status < 300
-        && let Some(id) = serde_json::from_slice::<Value>(&bytes)
-            .ok()
-            .and_then(|v| v["file_id"].as_str().map(str::to_string))
-    {
-        app.files.bind(&app.store, &id, &sent.acc.id);
-    }
-    record(
-        &app,
-        &key,
-        &sent.acc.id,
-        "files-create",
-        Endpoint::Files,
-        status,
-        &Value::Null,
-        started,
-        sent.ttfb,
-    );
-    json_response(status, bytes)
-}
-
-async fn files_finalize(State(app): State<Arc<App>>, h: HeaderMap, Path(id): Path<String>) -> Response {
-    let started = now_ms();
-    let key = match prelude(&app, &h) {
-        Ok(k) => k,
-        Err(r) => return *r,
-    };
-    let owner = app.files.owner(&id);
-    let path = format!("/files/{id}/uploaded");
-    let call = Call {
-        provider: Provider::Codex,
-        method: reqwest::Method::POST,
-        path: &path,
-        accept: "application/json",
-        pinned: owner.as_deref(),
-    };
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
-    loop {
-        let sent = match forward(&app, &key, &call, &|rb| {
-            rb.header(header::CONTENT_TYPE, "application/json").body(Bytes::new())
-        })
-        .await
+    fn failed(&self, provider: Provider, e: UpstreamError) -> ApiError {
+        let status = e.status();
+        tracing::warn!(endpoint = self.endpoint.as_str(), status, error = %e, "request failed");
+        self.record("", status, &Value::Null, now_ms());
+        if status == 503
+            && let Some(until) = self.app.accounts.next_available(provider, &self.key.cfg.accounts)
         {
-            Ok(s) => s,
-            Err(e) => return failed(&app, &key, Provider::Codex, Endpoint::Files, "files-finalize", started, e),
-        };
-        let status = sent.res.status().as_u16();
-        let bytes = sent.res.bytes().await.unwrap_or_default();
-        let retry = serde_json::from_slice::<Value>(&bytes).is_ok_and(|v| v["status"] == "retry");
-        if !retry || tokio::time::Instant::now() >= deadline {
-            record(
-                &app,
-                &key,
-                &sent.acc.id,
-                "files-finalize",
-                Endpoint::Files,
-                status,
-                &Value::Null,
-                started,
-                sent.ttfb,
-            );
-            return json_response(status, bytes);
+            return ApiError::limited(ApiFormat::Chat, provider, until);
         }
-        tokio::time::sleep(Duration::from_millis(250)).await;
+        ApiError::from((ApiFormat::Chat, e))
     }
-}
-
-struct Upload {
-    name: String,
-    file_name: String,
-    content_type: Option<String>,
-    data: Bytes,
-}
-
-#[derive(Default)]
-struct Fields {
-    text: HashMap<String, String>,
-    files: Vec<Upload>,
-}
-
-async fn read_form(mut mp: Multipart) -> Result<Fields, String> {
-    let mut out = Fields::default();
-    while let Some(f) = mp.next_field().await.map_err(|e| e.to_string())? {
-        let name = f.name().unwrap_or_default().to_string();
-        let file_name = f.file_name().map(str::to_string);
-        let content_type = f.content_type().map(str::to_string);
-        let data = f.bytes().await.map_err(|e| e.to_string())?;
-        match file_name {
-            Some(file_name) => out.files.push(Upload {
-                name,
-                file_name,
-                content_type,
-                data,
-            }),
-            None => {
-                out.text.insert(name, String::from_utf8_lossy(&data).into_owned());
-            }
-        }
-    }
-    Ok(out)
-}
-
-fn part(data: &Bytes, file_name: &str, content_type: &str) -> Part {
-    let make = || Part::stream_with_length(reqwest::Body::from(data.clone()), data.len() as u64).file_name(file_name.to_string());
-    make().mime_str(content_type).unwrap_or_else(|_| make())
-}
-
-fn bad_request(msg: &str) -> Response {
-    ApiError::new(ApiFormat::Chat, 400, msg).into_response()
-}
-
-async fn transcribe(app: Arc<App>, h: HeaderMap, mp: Multipart, v1: bool) -> Response {
-    let started = now_ms();
-    let key = match prelude(&app, &h) {
-        Ok(k) => k,
-        Err(r) => return *r,
-    };
-    let form = match read_form(mp).await {
-        Ok(f) => f,
-        Err(e) => return bad_request(&format!("invalid multipart body: {e}")),
-    };
-    if v1 {
-        match form.text.get("model").map(String::as_str) {
-            None => return bad_request("model is required"),
-            Some(m) if m != TRANSCRIBE_MODEL => {
-                return bad_request(&format!("model {m} is not supported, use {TRANSCRIBE_MODEL}"));
-            }
-            Some(m) if !key.allows_model(m) => {
-                return ApiError::new(ApiFormat::Chat, 403, &format!("model {m} not allowed for this key")).into_response();
-            }
-            _ => {}
-        }
-    }
-    let Some(file) = form.files.iter().find(|f| f.name == "file") else {
-        return bad_request("file is required");
-    };
-    let prompt = form.text.get("prompt");
-    let content_type = file.content_type.clone().unwrap_or_else(|| "application/octet-stream".into());
-    let call = Call {
-        provider: Provider::Codex,
-        method: reqwest::Method::POST,
-        path: "/transcribe",
-        accept: "application/json",
-        pinned: None,
-    };
-    let shape = |rb: reqwest::RequestBuilder| {
-        let mut f = Form::new().part("file", part(&file.data, &file.file_name, &content_type));
-        if let Some(p) = prompt {
-            f = f.text("prompt", p.clone());
-        }
-        rb.multipart(f)
-    };
-    let sent = match forward(&app, &key, &call, &shape).await {
-        Ok(s) => s,
-        Err(e) => return failed(&app, &key, Provider::Codex, Endpoint::Transcribe, TRANSCRIBE_MODEL, started, e),
-    };
-    record(
-        &app,
-        &key,
-        &sent.acc.id,
-        TRANSCRIBE_MODEL,
-        Endpoint::Transcribe,
-        sent.res.status().as_u16(),
-        &Value::Null,
-        started,
-        sent.ttfb,
-    );
-    pass(sent)
-}
-
-async fn transcribe_backend(State(app): State<Arc<App>>, h: HeaderMap, mp: Multipart) -> Response {
-    transcribe(app, h, mp, false).await
-}
-
-async fn transcribe_v1(State(app): State<Arc<App>>, h: HeaderMap, mp: Multipart) -> Response {
-    transcribe(app, h, mp, true).await
-}
-
-const TOOL_FIELDS: [(&str, &str); 6] = [
-    ("size", "auto"),
-    ("quality", "auto"),
-    ("background", "auto"),
-    ("output_format", "png"),
-    ("moderation", "auto"),
-    ("input_fidelity", ""),
-];
-
-fn data_url(data: &[u8], content_type: Option<&str>) -> String {
-    format!(
-        "data:{};base64,{}",
-        content_type.unwrap_or("image/png"),
-        base64::engine::general_purpose::STANDARD.encode(data)
-    )
-}
-
-async fn images(app: Arc<App>, key: Arc<Key>, opts: Value, images: Vec<String>, mask: Option<String>, started: i64) -> Response {
-    let model = opts["model"].as_str().unwrap_or(DEFAULT_IMAGE_MODEL).to_string();
-    if !model.starts_with("gpt-image-") {
-        return bad_request(&format!("unsupported image model {model}, use a gpt-image-* model"));
-    }
-    if !key.allows_model(&model) {
-        return ApiError::new(ApiFormat::Chat, 403, &format!("model {model} not allowed for this key")).into_response();
-    }
-    let Some(prompt) = opts["prompt"].as_str().filter(|p| !p.is_empty()) else {
-        return bad_request("prompt is required");
-    };
-    if opts["n"].as_u64().unwrap_or(1) > 1 {
-        return bad_request("n > 1 is not supported");
-    }
-    if opts["stream"].as_bool().unwrap_or(false) {
-        return bad_request("streaming image responses are not supported");
-    }
-    let edit = !images.is_empty();
-    let mut tool = json!({
-        "type": "image_generation", "model": model,
-        "output_compression": opts["output_compression"].as_u64().unwrap_or(100),
-    });
-    for (f, default) in TOOL_FIELDS {
-        match opts[f].as_str().unwrap_or(default) {
-            "" => {}
-            v => tool[f] = Value::from(v),
-        }
-    }
-    if edit {
-        tool["action"] = "edit".into();
-    }
-    let mut text = prompt.to_string();
-    if mask.is_some() {
-        text.push_str(MASK_HINT);
-    }
-    let mut content = vec![json!({"type": "input_text", "text": text})];
-    for url in images.iter().chain(mask.iter()) {
-        content.push(json!({"type": "input_image", "image_url": url}));
-    }
-    let mut up = json!({
-        "model": app.settings().warmup_model, "instructions": IMAGE_INSTRUCTIONS,
-        "input": [{"type": "message", "role": "user", "content": content}],
-        "tools": [tool], "tool_choice": {"type": "image_generation"},
-    });
-    codex::prepare_body(&mut up);
-    let body = Bytes::from(serde_json::to_vec(&up).unwrap());
-    let call = Call {
-        provider: Provider::Codex,
-        method: reqwest::Method::POST,
-        path: "/codex/responses",
-        accept: "text/event-stream",
-        pinned: None,
-    };
-    let sent = match forward(&app, &key, &call, &|rb| {
-        rb.header(header::CONTENT_TYPE, "application/json").body(body.clone())
-    })
-    .await
-    {
-        Ok(s) => s,
-        Err(e) => return failed(&app, &key, Provider::Codex, Endpoint::Images, &model, started, e),
-    };
-    let Sent { acc, res, guard, ttfb } = sent;
-    if res.status().as_u16() >= 400 {
-        let status = res.status().as_u16();
-        let text = res.text().await.unwrap_or_default();
-        drop(guard);
-        record(&app, &key, &acc.id, &model, Endpoint::Images, status, &Value::Null, started, ttfb);
-        return json_response(status, Bytes::from(text));
-    }
-    let idle = Duration::from_secs(app.settings().idle_timeout_secs.max(30));
-    let mut events = res.bytes_stream().eventsource();
-    let mut done: Option<Value> = None;
-    let mut items: Vec<Value> = vec![];
-    while let Ok(Some(Ok(ev))) = tokio::time::timeout(idle, events.next()).await {
-        let v: Value = serde_json::from_str(&ev.data).unwrap_or_default();
-        match v["type"].as_str().unwrap_or_default() {
-            "response.output_item.done" => items.push(v["item"].clone()),
-            "response.completed" | "response.failed" | "response.incomplete" => {
-                done = Some(v);
-                break;
-            }
-            "error" => {
-                done = Some(json!({"type": "response.failed", "response": {"error": v["error"].clone()}}));
-                break;
-            }
-            _ => {}
-        }
-    }
-    drop(guard);
-    let usage = done.as_ref().map_or(Value::Null, |d| d["response"]["usage"].clone());
-    let outcome = images_result(done.as_ref(), items);
-    let status = match &outcome {
-        Ok(_) => 200,
-        Err(_) => 502,
-    };
-    record(&app, &key, &acc.id, &model, Endpoint::Images, status, &usage, started, ttfb);
-    match outcome {
-        Ok(v) => axum::Json(v).into_response(),
-        Err(msg) => ApiError::new(ApiFormat::Chat, 502, &msg).into_response(),
-    }
-}
-
-fn images_result(done: Option<&Value>, items: Vec<Value>) -> Result<Value, String> {
-    let Some(done) = done else {
-        return Err("upstream stream ended without a response".into());
-    };
-    if done["type"] == "response.failed" {
-        return Err(done["response"]["error"]["message"].as_str().unwrap_or("upstream failed").into());
-    }
-    let resp = &done["response"];
-    let output = resp["output"].as_array().filter(|o| !o.is_empty()).cloned().unwrap_or(items);
-    let calls: Vec<&Value> = output.iter().filter(|i| i["type"] == "image_generation_call").collect();
-    if let Some(f) = calls.iter().find(|c| c["status"] == "failed") {
-        return Err(f["error"]["message"].as_str().unwrap_or("image generation failed").into());
-    }
-    let data: Vec<Value> = calls
-        .iter()
-        .filter_map(|c| {
-            let b64 = c["result"].as_str().filter(|r| !r.is_empty())?;
-            let mut d = json!({"b64_json": b64});
-            if let Some(p) = c["revised_prompt"].as_str().filter(|p| !p.is_empty()) {
-                d["revised_prompt"] = p.into();
-            }
-            Some(d)
-        })
-        .collect();
-    if data.is_empty() {
-        return Err("upstream returned no image data".into());
-    }
-    let mut out = json!({"created": now_ms() / 1000, "data": data});
-    if resp["tool_usage"]["image_gen"].is_object() {
-        out["usage"] = resp["tool_usage"]["image_gen"].clone();
-    }
-    Ok(out)
-}
-
-async fn images_generations(State(app): State<Arc<App>>, h: HeaderMap, body: Bytes) -> Response {
-    let started = now_ms();
-    let key = match prelude(&app, &h) {
-        Ok(k) => k,
-        Err(r) => return *r,
-    };
-    match serde_json::from_slice::<Value>(&body) {
-        Ok(opts) => images(app, key, opts, vec![], None, started).await,
-        Err(e) => bad_request(&format!("invalid json: {e}")),
-    }
-}
-
-async fn images_edits_json(State(app): State<Arc<App>>, h: HeaderMap, body: Bytes) -> Response {
-    let started = now_ms();
-    let key = match prelude(&app, &h) {
-        Ok(k) => k,
-        Err(r) => return *r,
-    };
-    let opts: Value = match serde_json::from_slice(&body) {
-        Ok(v) => v,
-        Err(e) => return bad_request(&format!("invalid json: {e}")),
-    };
-    let urls: Vec<String> = opts["images"]
-        .as_array()
-        .map(|a| a.iter().filter_map(|i| i["image_url"].as_str().map(str::to_string)).collect())
-        .unwrap_or_default();
-    if urls.is_empty() {
-        return bad_request("at least one images[].image_url data URL is required");
-    }
-    let mask = opts["mask"]["image_url"].as_str().map(str::to_string);
-    images(app, key, opts, urls, mask, started).await
-}
-
-async fn images_edits_multipart(State(app): State<Arc<App>>, h: HeaderMap, mp: Multipart) -> Response {
-    let started = now_ms();
-    let key = match prelude(&app, &h) {
-        Ok(k) => k,
-        Err(r) => return *r,
-    };
-    let form = match read_form(mp).await {
-        Ok(f) => f,
-        Err(e) => return bad_request(&format!("invalid multipart body: {e}")),
-    };
-    let urls: Vec<String> = form
-        .files
-        .iter()
-        .filter(|f| f.name == "image" || f.name == "image[]")
-        .map(|f| data_url(&f.data, f.content_type.as_deref()))
-        .collect();
-    if urls.is_empty() {
-        return bad_request("at least one image is required");
-    }
-    if urls.len() > 16 {
-        return bad_request("at most 16 images are supported");
-    }
-    let mask = form
-        .files
-        .iter()
-        .find(|f| f.name == "mask")
-        .map(|f| data_url(&f.data, f.content_type.as_deref()));
-    let mut opts = serde_json::Map::new();
-    for (k, v) in &form.text {
-        let val = match k.as_str() {
-            "n" | "output_compression" => v.parse::<u64>().map_or(Value::Null, Value::from),
-            "stream" => Value::Bool(v == "true"),
-            _ => Value::from(v.as_str()),
-        };
-        opts.insert(k.clone(), val);
-    }
-    images(app, key, Value::Object(opts), urls, mask, started).await
-}
-
-async fn embeddings(State(app): State<Arc<App>>, h: HeaderMap, body: Bytes) -> Response {
-    let started = now_ms();
-    let key = match prelude(&app, &h) {
-        Ok(k) => k,
-        Err(r) => return *r,
-    };
-    let req: Value = match serde_json::from_slice(&body) {
-        Ok(v) => v,
-        Err(e) => return bad_request(&format!("invalid json: {e}")),
-    };
-    let model = req["model"].as_str().unwrap_or_default().to_string();
-    if !model.contains('/') {
-        return bad_request(&format!(
-            "model {model:?} is not supported for embeddings: use an OpenRouter model id such as openai/text-embedding-3-small"
-        ));
-    }
-    if !key.allows_model(&model) {
-        return ApiError::new(ApiFormat::Chat, 403, &format!("model {model} not allowed for this key")).into_response();
-    }
-    if !app.accounts.any(Provider::OpenRouter) {
-        return ApiError::new(ApiFormat::Chat, 503, "no openrouter accounts connected to serve embeddings").into_response();
-    }
-    let call = Call {
-        provider: Provider::OpenRouter,
-        method: reqwest::Method::POST,
-        path: "/embeddings",
-        accept: "application/json",
-        pinned: None,
-    };
-    let sent = match forward(&app, &key, &call, &|rb| {
-        rb.header(header::CONTENT_TYPE, "application/json").body(body.clone())
-    })
-    .await
-    {
-        Ok(s) => s,
-        Err(e) => return failed(&app, &key, Provider::OpenRouter, Endpoint::Embeddings, &model, started, e),
-    };
-    let status = sent.res.status().as_u16();
-    let bytes = sent.res.bytes().await.unwrap_or_default();
-    let v: Value = serde_json::from_slice(&bytes).unwrap_or_default();
-    let usage = json!({"input_tokens": v["usage"]["prompt_tokens"], "cost": v["usage"]["cost"]});
-    record(
-        &app,
-        &key,
-        &sent.acc.id,
-        &model,
-        Endpoint::Embeddings,
-        status,
-        &usage,
-        started,
-        sent.ttfb,
-    );
-    json_response(status, bytes)
 }
