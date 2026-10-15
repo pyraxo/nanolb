@@ -211,15 +211,18 @@ async fn send(
             req = req.header(header::CONTENT_ENCODING, "zstd");
         }
         let req = req.body(body.clone());
+        let sent_at = now_ms();
         let res = match tokio::time::timeout(first_timeout, req.send()).await {
             Ok(Ok(r)) => r,
             Ok(Err(e)) => {
+                acc.observe(None);
                 acc.fail(now_ms() + 15_000, format!("connect: {e}"));
                 tried.push(acc.id.clone());
                 last = (502, format!("upstream connect failed: {e}"));
                 continue;
             }
             Err(_) => {
+                acc.observe(None);
                 acc.fail(now_ms() + 15_000, "timed out waiting for response headers".into());
                 tried.push(acc.id.clone());
                 last = (504, "upstream timed out".into());
@@ -249,6 +252,7 @@ async fn send(
                     return Err((status, msg));
                 }
                 Failure::Retry(until) => {
+                    acc.observe(None);
                     if until > 0 {
                         acc.fail(until, format!("{status}: {msg}"));
                     }
@@ -281,18 +285,23 @@ async fn send(
                 let msg = err["message"].as_str().unwrap_or("upstream failed").to_string();
                 match classify(0, &err) {
                     Failure::Client => return Err((400, msg)),
-                    Failure::Retry(until) => acc.fail(until, msg.clone()),
+                    Failure::Retry(until) => {
+                        acc.observe(None);
+                        acc.fail(until, msg.clone())
+                    }
                 }
                 tried.push(acc.id.clone());
                 last = (502, msg);
             }
             Ok(Some(Ok(first))) => {
+                let ttfb = now_ms();
+                acc.observe(Some(ttfb - sent_at));
                 return Ok(Upstream {
                     acc,
                     guard,
                     first,
                     events,
-                    ttfb: now_ms(),
+                    ttfb,
                     headers,
                 });
             }
@@ -301,6 +310,7 @@ async fn send(
                     Err(_) => "timed out waiting for first event".to_string(),
                     Ok(e) => format!("upstream closed before first event: {:?}", e.and_then(Result::err)),
                 };
+                acc.observe(None);
                 acc.fail(now_ms() + 10_000, msg.clone());
                 tried.push(acc.id.clone());
                 last = (502, msg);

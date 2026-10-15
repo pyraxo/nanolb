@@ -80,6 +80,25 @@ impl RateLimit {
     }
 }
 
+#[derive(Clone, Copy, Default)]
+pub struct Health {
+    pub ttfb_ms: f64,
+    pub err: f64,
+    pub at: i64,
+}
+
+impl Health {
+    const ALPHA: f64 = 0.3;
+
+    pub fn error_rate(&self, now: i64) -> f64 {
+        self.err * 0.5f64.powf((now - self.at).max(0) as f64 / 300_000.0)
+    }
+
+    pub fn score(&self, now: i64) -> f64 {
+        (self.ttfb_ms + 1_000.0) * (1.0 + 4.0 * self.error_rate(now))
+    }
+}
+
 pub struct Account {
     pub cfg: RwLock<AccountCfg>,
     pub id: String,
@@ -88,6 +107,7 @@ pub struct Account {
     pub inflight: AtomicU32,
     pub last_error: Mutex<Option<(i64, String)>>,
     pub refresh_lock: tokio::sync::Mutex<()>,
+    pub health: Mutex<Health>,
 }
 
 impl Account {
@@ -100,7 +120,21 @@ impl Account {
             inflight: AtomicU32::new(0),
             last_error: Mutex::new(None),
             refresh_lock: tokio::sync::Mutex::new(()),
+            health: Mutex::new(Health::default()),
         })
+    }
+
+    pub fn observe(&self, ttfb_ms: Option<i64>) {
+        let now = now_ms();
+        let mut h = self.health.lock();
+        let err = h.error_rate(now) * (1.0 - Health::ALPHA);
+        match ttfb_ms {
+            Some(t) if h.ttfb_ms == 0.0 => h.ttfb_ms = t as f64,
+            Some(t) => h.ttfb_ms = Health::ALPHA * t as f64 + (1.0 - Health::ALPHA) * h.ttfb_ms,
+            None => {}
+        }
+        h.err = if ttfb_ms.is_some() { err } else { err + Health::ALPHA };
+        h.at = now;
     }
 
     pub fn available(&self, now: i64) -> bool {
@@ -117,6 +151,7 @@ impl Account {
         let c = self.cfg.read();
         let now = now_ms();
         let cd = self.cooldown_until.load(Relaxed);
+        let hl = *self.health.lock();
         serde_json::json!({
             "id": c.id, "kind": c.kind, "email": c.email, "label": c.label, "plan": c.plan,
             "enabled": c.enabled, "priority": c.priority, "available": self.available(now),
@@ -124,6 +159,10 @@ impl Account {
             "inflight": self.inflight.load(Relaxed),
             "token_expires_at": crate::ts_iso(c.expires_at), "last_refresh": crate::ts_iso(c.last_refresh),
             "rate_limit": rl_view(&self.rl.lock()),
+            "latency": {
+                "ttfb_ewma_ms": hl.ttfb_ms.round(),
+                "error_rate": (hl.error_rate(now) * 1000.0).round() / 1000.0,
+            },
             "last_error": self.last_error.lock().as_ref().map(|(t, m)| serde_json::json!({"at": crate::ts_iso(*t), "message": m})),
             "warmup": c.warmup, "created_at": crate::ts_iso(c.created_at),
         })
@@ -310,6 +349,7 @@ pub enum Strategy {
     Burn,
     RoundRobin,
     Priority,
+    Latency,
 }
 
 impl Default for Settings {
@@ -567,6 +607,11 @@ impl App {
                 let (ua, ub) = (a.rl.lock().used(now), b.rl.lock().used(now));
                 ua.total_cmp(&ub).then(a.inflight.load(Relaxed).cmp(&b.inflight.load(Relaxed)))
             }),
+            Strategy::Latency => cands
+                .iter()
+                .map(|a| (a.health.lock().score(now), a.inflight.load(Relaxed), *a))
+                .min_by(|x, y| x.0.total_cmp(&y.0).then(x.1.cmp(&y.1)))
+                .map(|x| x.2),
             Strategy::Burn => cands.iter().copied().min_by_key(|a| {
                 let r = a.rl.lock();
                 (r.weekly_reset(now), -(r.used(now) as i64), a.cfg.read().priority)
@@ -732,6 +777,18 @@ mod tests {
         assert_eq!(app.pick("codex", &[], &[], None).unwrap().id, "b");
         assert_eq!(app.pick("codex", &[], &["b".into()], None).unwrap().id, "a");
         assert!(app.pick("codex", &[], &["a".into(), "b".into()], None).is_none());
+    }
+
+    #[test]
+    fn latency_prefers_faster_healthy_account() {
+        let app = app_with(Strategy::Latency, &[("a", 0.0, 0), ("b", 0.0, 0), ("c", 0.0, 0)]);
+        for _ in 0..3 {
+            app.account("a").unwrap().observe(Some(900));
+            app.account("b").unwrap().observe(Some(80));
+            app.account("c").unwrap().observe(Some(60));
+        }
+        app.account("c").unwrap().observe(None);
+        assert_eq!(app.pick("codex", &[], &[], None).unwrap().id, "b");
     }
 
     #[test]
