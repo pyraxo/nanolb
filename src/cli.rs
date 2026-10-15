@@ -1,0 +1,548 @@
+use crate::client::Client;
+use clap::{Args, Parser, Subcommand};
+use oauth2::{AuthUrl, ClientId, CsrfToken, PkceCodeChallenge, RedirectUrl, Scope, TokenUrl, basic::BasicClient};
+use serde_json::{Map, Value, json};
+use std::{collections::HashMap, path::PathBuf, sync::Arc, time::Duration};
+use tokio::sync::mpsc;
+
+const AUTHORIZE_URL: &str = "https://auth.openai.com/oauth/authorize";
+const TOKEN_URL: &str = "https://auth.openai.com/oauth/token";
+const CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
+const REDIRECT_URI: &str = "http://localhost:1455/auth/callback";
+
+#[derive(Parser)]
+#[command(name = "nanolb", version, about)]
+pub struct Cli {
+    #[command(subcommand)]
+    pub cmd: Cmd,
+}
+
+#[derive(Subcommand)]
+pub enum Cmd {
+    Serve {
+        #[arg(long, env = "NANOLB_HOST", default_value = "127.0.0.1")]
+        host: String,
+        #[arg(long, env = "NANOLB_PORT", default_value_t = 2455)]
+        port: u16,
+    },
+    Mcp,
+    Up {
+        #[arg(long, env = "NANOLB_HOST", default_value = "127.0.0.1")]
+        host: String,
+        #[arg(long, env = "NANOLB_PORT", default_value_t = 2455)]
+        port: u16,
+    },
+    Down,
+    Status,
+    Login {
+        #[arg(long)]
+        label: Option<String>,
+        #[arg(long)]
+        browser: bool,
+        #[arg(long)]
+        claude: bool,
+    },
+    Accounts {
+        #[command(subcommand)]
+        cmd: AccountsCmd,
+    },
+    Keys {
+        #[command(subcommand)]
+        cmd: KeysCmd,
+    },
+    Usage {
+        #[arg(long, default_value = "24h")]
+        since: String,
+        #[arg(long)]
+        group: Option<String>,
+    },
+    Requests {
+        #[arg(long, default_value_t = 50)]
+        limit: u32,
+    },
+    Settings {
+        #[command(subcommand)]
+        cmd: SettingsCmd,
+    },
+    Models,
+    Call {
+        op: String,
+        json: Option<String>,
+    },
+    CodexConfig {
+        #[arg(long)]
+        key: Option<String>,
+    },
+    Top {
+        #[arg(long, default_value_t = 2)]
+        interval: u64,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum AccountsCmd {
+    Ls,
+    Import {
+        path: Option<PathBuf>,
+        #[arg(long)]
+        label: Option<String>,
+    },
+    AddOpenrouter {
+        api_key: String,
+        #[arg(long)]
+        label: Option<String>,
+    },
+    AddClaudeToken {
+        token: String,
+        #[arg(long)]
+        label: Option<String>,
+    },
+    Rm {
+        id: String,
+    },
+    Enable {
+        id: String,
+    },
+    Disable {
+        id: String,
+    },
+    Priority {
+        id: String,
+        n: i64,
+    },
+    Refresh {
+        id: String,
+    },
+    Warmup {
+        id: String,
+    },
+    SetWarmup {
+        id: String,
+        cron: String,
+        #[arg(long)]
+        model: Option<String>,
+        #[arg(long)]
+        prompt: Option<String>,
+    },
+    ClearWarmup {
+        id: String,
+    },
+}
+
+#[derive(Args)]
+pub struct KeyOpts {
+    #[arg(long = "account")]
+    accounts: Vec<String>,
+    #[arg(long = "model")]
+    models: Vec<String>,
+    #[arg(long = "limit")]
+    limits: Vec<String>,
+    #[arg(long)]
+    expires: Option<String>,
+}
+
+#[derive(Subcommand)]
+pub enum KeysCmd {
+    Ls,
+    Create {
+        name: String,
+        #[command(flatten)]
+        opts: KeyOpts,
+    },
+    Rm {
+        id: String,
+    },
+    Enable {
+        id: String,
+    },
+    Disable {
+        id: String,
+    },
+    Update {
+        id: String,
+        #[command(flatten)]
+        opts: KeyOpts,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum SettingsCmd {
+    Get,
+    Set { key: String, value: String },
+}
+
+fn id(s: &str) -> Value {
+    serde_json::from_str(s).unwrap_or_else(|_| json!(s))
+}
+
+fn parse_limit(s: &str) -> Result<Value, String> {
+    let bad = || format!("invalid limit '{s}', expected WINDOW:KIND:VALUE");
+    let [window, kind, value] = s.split(':').collect::<Vec<_>>()[..] else {
+        return Err(bad());
+    };
+    let (field, value) = match kind {
+        "tokens" => ("max_tokens", json!(value.parse::<u64>().map_err(|_| bad())?)),
+        "requests" => ("max_requests", json!(value.parse::<u64>().map_err(|_| bad())?)),
+        "usd" => ("max_cost_usd", json!(value.parse::<f64>().map_err(|_| bad())?)),
+        _ => return Err(bad()),
+    };
+    Ok(json!({ "window": window, field: value }))
+}
+
+impl KeyOpts {
+    fn fill(self, args: &mut Map<String, Value>) -> Result<(), String> {
+        if !self.accounts.is_empty() {
+            args.insert("accounts".into(), self.accounts.iter().map(|a| id(a)).collect());
+        }
+        if !self.models.is_empty() {
+            args.insert("models".into(), json!(self.models));
+        }
+        if !self.limits.is_empty() {
+            let limits = self.limits.iter().map(|l| parse_limit(l)).collect::<Result<Vec<_>, _>>()?;
+            args.insert("limits".into(), json!(limits));
+        }
+        if let Some(e) = self.expires {
+            args.insert("expires_at".into(), json!(e));
+        }
+        Ok(())
+    }
+}
+
+fn print(v: &Value) {
+    println!("{}", serde_json::to_string_pretty(v).unwrap_or_default());
+}
+
+async fn show(c: &Client, op: &str, args: Value) -> Result<(), String> {
+    print(&c.call(op, args).await?);
+    Ok(())
+}
+
+pub async fn run(cmd: Cmd) -> Result<(), String> {
+    let c = Client::from_env();
+    match cmd {
+        Cmd::Serve { .. } | Cmd::Mcp => Ok(()),
+        Cmd::Up { host, port } => up(&c, host, port).await,
+        Cmd::Down => down().await,
+        Cmd::Status => show(&c, "status", json!({})).await,
+        Cmd::Login { label, browser, claude } => {
+            let account = if claude {
+                login_claude(&c, label).await?
+            } else if browser {
+                login_browser(&c, label).await?
+            } else {
+                login_device(&c, label).await?
+            };
+            print(&account);
+            Ok(())
+        }
+        Cmd::Accounts { cmd } => accounts(&c, cmd).await,
+        Cmd::Keys { cmd } => keys(&c, cmd).await,
+        Cmd::Usage { since, group } => {
+            let mut args = json!({ "since": since });
+            if let Some(g) = group {
+                args["group"] = json!(g);
+            }
+            show(&c, "usage", args).await
+        }
+        Cmd::Requests { limit } => show(&c, "requests", json!({ "limit": limit })).await,
+        Cmd::Settings { cmd: SettingsCmd::Get } => show(&c, "settings_get", json!({})).await,
+        Cmd::Settings {
+            cmd: SettingsCmd::Set { key, value },
+        } => {
+            let value = serde_json::from_str(&value).unwrap_or(json!(value));
+            show(&c, "settings_update", json!({ key: value })).await
+        }
+        Cmd::Models => show(&c, "models", json!({})).await,
+        Cmd::Call { op, json } => {
+            let args = match json {
+                Some(j) => serde_json::from_str(&j).map_err(|e| format!("invalid JSON: {e}"))?,
+                None => json!({}),
+            };
+            show(&c, &op, args).await
+        }
+        Cmd::CodexConfig { key } => {
+            codex_config(&c.url, key);
+            Ok(())
+        }
+        Cmd::Top { interval } => crate::tui::run(c, interval).await,
+    }
+}
+
+async fn accounts(c: &Client, cmd: AccountsCmd) -> Result<(), String> {
+    match cmd {
+        AccountsCmd::Ls => show(c, "accounts_list", json!({})).await,
+        AccountsCmd::Import { path, label } => {
+            let path = path.unwrap_or_else(|| PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".codex/auth.json"));
+            let auth_json = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+            show(c, "account_import", json!({ "auth_json": auth_json, "label": label })).await
+        }
+        AccountsCmd::AddClaudeToken { token, label } => {
+            show(c, "account_add_claude_token", json!({ "token": token, "label": label })).await
+        }
+        AccountsCmd::AddOpenrouter { api_key, label } => {
+            show(c, "account_add_openrouter", json!({ "api_key": api_key, "label": label })).await
+        }
+        AccountsCmd::Rm { id: i } => show(c, "account_remove", json!({ "id": id(&i) })).await,
+        AccountsCmd::Enable { id: i } => show(c, "account_update", json!({ "id": id(&i), "enabled": true })).await,
+        AccountsCmd::Disable { id: i } => show(c, "account_update", json!({ "id": id(&i), "enabled": false })).await,
+        AccountsCmd::Priority { id: i, n } => show(c, "account_update", json!({ "id": id(&i), "priority": n })).await,
+        AccountsCmd::Refresh { id: i } => show(c, "account_refresh", json!({ "id": id(&i) })).await,
+        AccountsCmd::Warmup { id: i } => show(c, "account_warmup", json!({ "id": id(&i) })).await,
+        AccountsCmd::SetWarmup {
+            id: i,
+            cron,
+            model,
+            prompt,
+        } => {
+            let warmup = json!({ "cron": cron, "model": model, "prompt": prompt });
+            show(c, "account_update", json!({ "id": id(&i), "warmup": warmup })).await
+        }
+        AccountsCmd::ClearWarmup { id: i } => show(c, "account_update", json!({ "id": id(&i), "warmup": null })).await,
+    }
+}
+
+async fn keys(c: &Client, cmd: KeysCmd) -> Result<(), String> {
+    match cmd {
+        KeysCmd::Ls => show(c, "keys_list", json!({})).await,
+        KeysCmd::Create { name, opts } => {
+            let mut args = Map::new();
+            args.insert("name".into(), json!(name));
+            opts.fill(&mut args)?;
+            show(c, "key_create", Value::Object(args)).await
+        }
+        KeysCmd::Rm { id: i } => show(c, "key_remove", json!({ "id": id(&i) })).await,
+        KeysCmd::Enable { id: i } => show(c, "key_update", json!({ "id": id(&i), "enabled": true })).await,
+        KeysCmd::Disable { id: i } => show(c, "key_update", json!({ "id": id(&i), "enabled": false })).await,
+        KeysCmd::Update { id: i, opts } => {
+            let mut args = Map::new();
+            args.insert("id".into(), id(&i));
+            opts.fill(&mut args)?;
+            show(c, "key_update", Value::Object(args)).await
+        }
+    }
+}
+
+async fn login_device(c: &Client, label: Option<String>) -> Result<Value, String> {
+    let start = c.call("login_start", json!({ "label": label })).await?;
+    eprintln!(
+        "Open {} and enter code {}",
+        start["verification_url"].as_str().unwrap_or(""),
+        start["user_code"].as_str().unwrap_or("")
+    );
+    loop {
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        let poll = c.call("login_poll", json!({ "login_id": start["login_id"] })).await?;
+        match poll["status"].as_str() {
+            Some("done") => return Ok(poll["account"].clone()),
+            Some("error") => return Err(poll["error"].as_str().unwrap_or("login failed").to_string()),
+            _ => {}
+        }
+    }
+}
+
+fn running_pid() -> Option<u32> {
+    let pid: u32 = std::fs::read_to_string(crate::home().join("nanolb.pid"))
+        .ok()?
+        .trim()
+        .parse()
+        .ok()?;
+    std::process::Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .stderr(std::process::Stdio::null())
+        .status()
+        .ok()?
+        .success()
+        .then_some(pid)
+}
+
+async fn up(c: &Client, host: String, port: u16) -> Result<(), String> {
+    if let Some(pid) = running_pid() {
+        print(&json!({ "status": "already running", "pid": pid, "url": c.url }));
+        return Ok(());
+    }
+    let home = crate::home();
+    std::fs::create_dir_all(&home).map_err(|e| e.to_string())?;
+    let log_path = home.join("nanolb.log");
+    let log = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+        .map_err(|e| e.to_string())?;
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let mut cmd = std::process::Command::new(exe);
+    cmd.args(["serve", "--host", &host, "--port", &port.to_string()])
+        .stdin(std::process::Stdio::null())
+        .stdout(log.try_clone().map_err(|e| e.to_string())?)
+        .stderr(log);
+    #[cfg(unix)]
+    std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
+    let child = cmd.spawn().map_err(|e| e.to_string())?;
+    let url = format!("http://{host}:{port}");
+    let http = reqwest::Client::new();
+    for _ in 0..50 {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        if http
+            .get(format!("{url}/health"))
+            .send()
+            .await
+            .is_ok_and(|r| r.status().is_success())
+        {
+            print(&json!({ "status": "up", "pid": child.id(), "url": url, "log": log_path }));
+            return Ok(());
+        }
+    }
+    Err(format!("nanolb did not become healthy within 5s; see {}", log_path.display()))
+}
+
+async fn down() -> Result<(), String> {
+    let Some(pid) = running_pid() else {
+        print(&json!({ "status": "not running" }));
+        return Ok(());
+    };
+    std::process::Command::new("kill")
+        .args(["-INT", &pid.to_string()])
+        .status()
+        .map_err(|e| e.to_string())?;
+    for _ in 0..100 {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        if running_pid().is_none() {
+            print(&json!({ "status": "down", "pid": pid }));
+            return Ok(());
+        }
+    }
+    Err(format!("nanolb (pid {pid}) did not stop within 10s"))
+}
+
+async fn login_claude(c: &Client, label: Option<String>) -> Result<Value, String> {
+    let start = c.call("claude_login_start", json!({ "label": label })).await?;
+    let url = start["authorize_url"].as_str().unwrap_or_default();
+    eprintln!("Open this URL, sign in to the Claude account, then paste the code shown:\n{url}");
+    let _ = open::that(url);
+    eprint!("code: ");
+    let mut code = String::new();
+    std::io::stdin().read_line(&mut code).map_err(|e| e.to_string())?;
+    c.call("claude_login_finish", json!({ "login_id": start["login_id"], "code": code.trim() }))
+        .await
+}
+
+type CallbackTx = Arc<mpsc::Sender<HashMap<String, String>>>;
+
+async fn callback(
+    axum::extract::State(tx): axum::extract::State<CallbackTx>,
+    axum::extract::Query(q): axum::extract::Query<HashMap<String, String>>,
+) -> &'static str {
+    let _ = tx.send(q).await;
+    "Login complete. You can close this tab."
+}
+
+async fn login_browser(c: &Client, label: Option<String>) -> Result<Value, String> {
+    let oauth = BasicClient::new(ClientId::new(CLIENT_ID.into()))
+        .set_auth_uri(AuthUrl::new(AUTHORIZE_URL.into()).map_err(|e| e.to_string())?)
+        .set_token_uri(TokenUrl::new(TOKEN_URL.into()).map_err(|e| e.to_string())?)
+        .set_redirect_uri(RedirectUrl::new(REDIRECT_URI.into()).map_err(|e| e.to_string())?);
+    let (challenge, verifier) = PkceCodeChallenge::new_random_sha256();
+    let mut req = oauth.authorize_url(CsrfToken::new_random).set_pkce_challenge(challenge);
+    for scope in ["openid", "profile", "email", "offline_access"] {
+        req = req.add_scope(Scope::new(scope.into()));
+    }
+    let (url, state) = req
+        .add_extra_param("id_token_add_organizations", "true")
+        .add_extra_param("codex_cli_simplified_flow", "true")
+        .add_extra_param("originator", "codex_cli_rs")
+        .url();
+
+    let (tx, mut rx) = mpsc::channel(1);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:1455")
+        .await
+        .map_err(|e| format!("cannot bind 127.0.0.1:1455: {e}"))?;
+    let app = axum::Router::new()
+        .route("/auth/callback", axum::routing::get(callback))
+        .with_state(Arc::new(tx));
+    let server = tokio::spawn(async move { axum::serve(listener, app).await });
+
+    eprintln!("Open {url}");
+    let _ = open::that(url.as_str());
+    let params = tokio::time::timeout(Duration::from_secs(300), rx.recv()).await;
+    server.abort();
+    let params = params.map_err(|_| "login timed out".to_string())?.ok_or("callback closed")?;
+    if params.get("state").map(String::as_str) != Some(state.secret().as_str()) {
+        return Err("state mismatch".into());
+    }
+    let code = params
+        .get("code")
+        .ok_or_else(|| params.get("error").cloned().unwrap_or("missing code".into()))?;
+
+    let tokens: Value = reqwest::Client::new()
+        .post(TOKEN_URL)
+        .form(&[
+            ("grant_type", "authorization_code"),
+            ("client_id", CLIENT_ID),
+            ("code", code.as_str()),
+            ("redirect_uri", REDIRECT_URI),
+            ("code_verifier", verifier.secret().as_str()),
+        ])
+        .send()
+        .await
+        .and_then(|r| r.error_for_status())
+        .map_err(|e| format!("token exchange failed: {e}"))?
+        .json()
+        .await
+        .map_err(|e| e.to_string())?;
+    c.call(
+        "account_add_tokens",
+        json!({
+            "id_token": tokens["id_token"],
+            "access_token": tokens["access_token"],
+            "refresh_token": tokens["refresh_token"],
+            "label": label,
+        }),
+    )
+    .await
+}
+
+fn codex_config(url: &str, key: Option<String>) {
+    let key = key.unwrap_or_else(|| std::env::var("NANOLB_API_KEY").unwrap_or_else(|_| "nlb-...".into()));
+    println!(
+        r#"# ~/.codex/config.toml
+model_provider = "nanolb"
+
+[model_providers.nanolb]
+name = "nanolb"
+base_url = "{url}/backend-api/codex"
+wire_api = "responses"
+env_key = "NANOLB_API_KEY"
+supports_websockets = false
+
+export NANOLB_API_KEY={key}
+
+# Claude Code
+export ANTHROPIC_BASE_URL={url}
+export ANTHROPIC_AUTH_TOKEN={key}
+
+# OpenRouter-compatible base URL
+{url}/api/v1
+
+# OpenAI-compatible base URL
+{url}/v1
+
+# Hermes Agent: ~/.hermes/.env
+NANOLB_API_KEY={key}
+
+# Hermes Agent: ~/.hermes/config.yaml
+providers:
+  nanolb:
+    api: {url}/v1
+    key_env: NANOLB_API_KEY
+    transport: codex_responses
+    default_model: gpt-6.1-sol
+    discover_models: true
+  nanolb-claude:
+    api: {url}
+    key_env: NANOLB_API_KEY
+    transport: anthropic_messages
+    default_model: claude-opus-5-5
+model:
+  default: gpt-6.1-sol
+  provider: custom:nanolb"#
+    );
+}
