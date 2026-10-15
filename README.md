@@ -55,6 +55,9 @@ name = "nanolb"
 base_url = "http://127.0.0.1:2455/backend-api/codex"
 wire_api = "responses"
 env_key = "NANOLB_API_KEY"
+
+[model_providers.nanolb.capabilities]
+remote_compaction = "v2"
 ```
 
 Claude Code: set `ANTHROPIC_BASE_URL=http://127.0.0.1:2455`, `ANTHROPIC_AUTH_TOKEN=nlb-...` and `ANTHROPIC_MODEL=gpt-6.1-sol`. nanolb serves Codex models on `/v1/messages`. Hermes can use the same endpoint with a provider that has `api: http://127.0.0.1:2455` and `transport: anthropic_messages` (see AGENTS.md).

@@ -537,6 +537,9 @@ wire_api = "responses"
 env_key = "NANOLB_API_KEY"
 supports_websockets = false
 
+[model_providers.nanolb.capabilities]
+remote_compaction = "v2"
+
 export NANOLB_API_KEY={key}
 
 # Claude Code (Anthropic format, served by your Codex accounts)

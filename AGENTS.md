@@ -191,7 +191,12 @@ base_url = "http://127.0.0.1:2455/backend-api/codex"
 wire_api = "responses"
 env_key = "NANOLB_API_KEY"
 supports_websockets = false
+
+[model_providers.nanolb.capabilities]
+remote_compaction = "v2"
 ```
+
+The `capabilities` table turns on remote compaction (v2). Codex then sends `compaction_trigger` items on `/responses`, and nanolb forwards them like any other request.
 
 Then: `export NANOLB_API_KEY=nlb-...`.
 
