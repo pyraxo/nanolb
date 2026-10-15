@@ -1,15 +1,15 @@
-pub(crate) mod account;
-pub(crate) mod accounts;
-pub(crate) mod files;
-pub(crate) mod key;
-pub(crate) mod keys;
-pub(crate) mod logins;
-pub(crate) mod models;
+mod account;
+mod accounts;
+mod files;
+mod key;
+mod keys;
+mod logins;
+mod models;
 mod pick;
-pub(crate) mod sessions;
-pub(crate) mod settings;
+mod sessions;
+mod settings;
 
-pub(crate) use account::{Account, AccountCfg, Inflight, Provider, Warmup};
+pub(crate) use account::{Account, AccountCfg, Inflight, Provider, RateLimit, Warmup};
 pub(crate) use accounts::{Accounts, LookupError};
 pub(crate) use files::FileOwners;
 pub(crate) use key::{Key, KeyCfg, KeyRejected, Limit, Window};
