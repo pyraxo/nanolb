@@ -426,6 +426,10 @@ async fn run(job: Job, up: Upstream, mut tx: Tx, stream: bool, opts_json: impl F
         return res;
     }
     let idle = std::time::Duration::from_secs(job.app.settings().idle_timeout_secs.max(30));
+    let keepalive = match job.app.settings().keepalive_secs {
+        0 => idle,
+        k => std::time::Duration::from_secs(k).min(idle),
+    };
     let (sender, rx) = tokio::sync::mpsc::channel::<Bytes>(128);
     tokio::spawn(async move {
         let _guard = guard;
@@ -440,9 +444,21 @@ async fn run(job: Job, up: Upstream, mut tx: Tx, stream: bool, opts_json: impl F
                     break 'outer;
                 }
             }
-            match tokio::time::timeout(idle, events.next()).await {
-                Ok(Some(Ok(ev))) => on_event(&mut tx, &ev, &acc, &mut tap, false, &mut out),
-                _ => break,
+            let deadline = tokio::time::Instant::now() + idle;
+            loop {
+                match tokio::time::timeout(keepalive, events.next()).await {
+                    Ok(Some(Ok(ev))) => {
+                        on_event(&mut tx, &ev, &acc, &mut tap, false, &mut out);
+                        break;
+                    }
+                    Err(_) if tokio::time::Instant::now() < deadline => {
+                        if sender.send(Bytes::from_static(b": keepalive\n\n")).await.is_err() {
+                            alive = false;
+                            break 'outer;
+                        }
+                    }
+                    _ => break 'outer,
+                }
             }
         }
         if alive {
@@ -696,6 +712,7 @@ mod tests {
     use crate::state::{AccountCfg, App, KeyCfg, Settings};
     use crate::store::Store;
     use axum::routing::post;
+    use futures_util::StreamExt;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -703,8 +720,8 @@ mod tests {
 event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\n\n\
 event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"status\":\"completed\",\"model\":\"gpt-5.4\",\"output\":[],\"usage\":{\"input_tokens\":10,\"output_tokens\":2,\"total_tokens\":12}}}\n\n";
 
-    async fn mock_upstream(hits_b: Arc<AtomicUsize>) -> String {
-        let app = axum::Router::new().route(
+    fn mock_upstream(hits_b: Arc<AtomicUsize>) -> axum::Router {
+        axum::Router::new().route(
             "/codex/responses",
             post(move |h: axum::http::HeaderMap| {
                 let hits_b = hits_b.clone();
@@ -722,22 +739,18 @@ event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{
                     (axum::http::StatusCode::OK, SSE_OK.to_string())
                 }
             }),
-        );
-        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = l.local_addr().unwrap();
-        tokio::spawn(async move { axum::serve(l, app).await.unwrap() });
-        format!("http://{addr}")
+        )
     }
 
-    #[tokio::test]
-    async fn rate_limited_account_fails_over_and_cache_session_sticks_to_survivor() {
-        let hits_b = Arc::new(AtomicUsize::new(0));
-        let base = mock_upstream(hits_b.clone()).await;
+    async fn serve(upstream: axum::Router, settings: Settings) -> String {
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", l.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(l, upstream).await.unwrap() });
         let dir = std::env::temp_dir().join(format!("nanolb-proxy-{}", crate::random_hex(4)));
         let app = App::new(Store::open(&dir).unwrap(), "admin".into());
         app.save_settings(Settings {
             upstream_base: base,
-            ..Default::default()
+            ..settings
         });
         let far = crate::now_ms() + 86_400_000;
         for (id, priority) in [("a", 0), ("b", 1)] {
@@ -767,6 +780,13 @@ event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{
         let srv = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}/v1/responses", srv.local_addr().unwrap());
         tokio::spawn(async move { axum::serve(srv, crate::router(app)).await.unwrap() });
+        url
+    }
+
+    #[tokio::test]
+    async fn rate_limited_account_fails_over_and_cache_session_sticks_to_survivor() {
+        let hits_b = Arc::new(AtomicUsize::new(0));
+        let url = serve(mock_upstream(hits_b.clone()), Settings::default()).await;
         let http = reqwest::Client::new();
         let body = serde_json::json!({"model": "gpt-5.4", "input": "hi", "stream": true, "prompt_cache_key": "conv-1"});
 
@@ -777,5 +797,42 @@ event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{
         }
 
         assert_eq!(hits_b.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn stalled_stream_gets_keepalive_comments() {
+        let upstream = axum::Router::new().route(
+            "/codex/responses",
+            post(|| async {
+                let chunks: Vec<String> = SSE_OK.split_inclusive("\n\n").map(str::to_string).collect();
+                axum::body::Body::from_stream(
+                    futures_util::stream::iter(chunks.into_iter().enumerate()).then(|(i, c)| async move {
+                        if i == 1 {
+                            tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+                        }
+                        Ok::<_, std::convert::Infallible>(c)
+                    }),
+                )
+            }),
+        );
+        let url = serve(
+            upstream,
+            Settings {
+                keepalive_secs: 1,
+                ..Default::default()
+            },
+        )
+        .await;
+        let body = serde_json::json!({"model": "gpt-5.4", "input": "hi", "stream": true});
+        let res = reqwest::Client::new()
+            .post(&url)
+            .bearer_auth("nlb-test")
+            .json(&body)
+            .send()
+            .await
+            .unwrap();
+        let text = res.text().await.unwrap();
+        let ka = text.find(": keepalive\n\n").expect("keepalive comment");
+        assert!(ka < text.find("\"delta\":\"hello\"").unwrap());
     }
 }

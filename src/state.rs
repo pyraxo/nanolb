@@ -299,6 +299,7 @@ pub struct Settings {
     pub openrouter_models: Vec<String>,
     pub first_event_timeout_secs: u64,
     pub idle_timeout_secs: u64,
+    pub keepalive_secs: u64,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -329,6 +330,7 @@ impl Default for Settings {
                 .into_iter()
                 .map(String::from)
                 .collect(),
+            keepalive_secs: 15,
         }
     }
 }
