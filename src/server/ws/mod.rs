@@ -1,8 +1,8 @@
-use crate::codex;
-use crate::proxy::Inflight;
+use crate::upstream::codex;
+use crate::server::http::Inflight;
 use crate::server::auth::api_key;
 use crate::server::error::{ApiError, ApiFormat};
-use crate::state::{Account, App, Key};
+use crate::app::{Account, App, Key};
 use crate::time::now_ms;
 use axum::Router;
 use axum::extract::ws::{self, WebSocket, WebSocketUpgrade};
@@ -938,7 +938,7 @@ async fn v1_live(
 
 #[cfg(test)]
 mod tests {
-    use crate::state::{AccountCfg, App, KeyCfg, Settings};
+    use crate::app::{AccountCfg, App, KeyCfg, Settings};
     use crate::store::Store;
     use axum::extract::ws::{Message as CMsg, WebSocketUpgrade};
     use axum::http::{HeaderMap, StatusCode};

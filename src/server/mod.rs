@@ -1,8 +1,12 @@
 pub(crate) mod auth;
+pub(crate) mod endpoints;
 pub(crate) mod error;
+pub(crate) mod http;
+pub(crate) mod ws;
 
-use crate::state::App;
-use crate::{admin, endpoints, home, mcp, proxy, ws};
+use crate::app::App;
+use crate::control::{admin, mcp};
+use crate::home;
 use axum::Router;
 use axum::extract::DefaultBodyLimit;
 use axum::middleware::from_fn_with_state;
@@ -23,17 +27,17 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/admin/{op}", get(admin::http).post(admin::http))
         .route_layer(from_fn_with_state(app.clone(), auth::admin_guard));
     Router::new()
-        .route("/v1/responses", post(proxy::responses).get(ws::upgrade))
-        .route("/backend-api/codex/responses", post(proxy::responses).get(ws::upgrade))
-        .route("/backend-api/codex/models", get(proxy::codex_models))
-        .route("/v1/chat/completions", post(proxy::chat_completions))
-        .route("/api/v1/chat/completions", post(proxy::openrouter))
-        .route("/v1/models", get(proxy::models))
-        .route("/api/v1/models", get(proxy::openrouter_models))
-        .route("/api/v1/key", get(proxy::openrouter_key))
-        .route("/api/v1/auth/key", get(proxy::openrouter_key))
-        .route("/v1/messages", post(proxy::messages))
-        .route("/v1/messages/count_tokens", post(proxy::count_tokens))
+        .route("/v1/responses", post(http::responses).get(ws::upgrade))
+        .route("/backend-api/codex/responses", post(http::responses).get(ws::upgrade))
+        .route("/backend-api/codex/models", get(http::codex_models))
+        .route("/v1/chat/completions", post(http::chat_completions))
+        .route("/api/v1/chat/completions", post(http::openrouter))
+        .route("/v1/models", get(http::models))
+        .route("/api/v1/models", get(http::openrouter_models))
+        .route("/api/v1/key", get(http::openrouter_key))
+        .route("/api/v1/auth/key", get(http::openrouter_key))
+        .route("/v1/messages", post(http::messages))
+        .route("/v1/messages/count_tokens", post(http::count_tokens))
         .merge(endpoints::routes())
         .merge(ws::routes())
         .route_layer(from_fn_with_state(app.clone(), auth::require_key))
@@ -52,7 +56,7 @@ pub(crate) async fn serve(host: String, port: u16) -> anyhow::Result<()> {
     home::secure_permissions(&dir, &db);
     let app = App::new(store, home::admin_token()?);
     let _ = crate::APP.set(app.clone());
-    crate::codex::spawn_background(app.clone());
+    crate::upstream::codex::spawn_background(app.clone());
     let listener = tokio::net::TcpListener::bind((host.as_str(), port))
         .await
         .map_err(|e| anyhow::anyhow!("bind {host}:{port}: {e}"))?;

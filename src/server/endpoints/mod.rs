@@ -1,8 +1,8 @@
-use crate::proxy::Inflight;
+use crate::server::http::Inflight;
 use crate::server::auth::api_key;
 use crate::server::error::{ApiError, ApiFormat};
-use crate::state::{Account, App, Key, Window};
-use crate::codex;
+use crate::app::{Account, App, Key, Window};
+use crate::upstream::codex;
 use crate::time::now_ms;
 use axum::Router;
 use axum::body::{Body, Bytes};
@@ -829,7 +829,7 @@ async fn embeddings(State(app): State<Arc<App>>, h: HeaderMap, body: Bytes) -> R
 
 #[cfg(test)]
 mod tests {
-    use crate::state::{AccountCfg, App, KeyCfg, Settings, Strategy};
+    use crate::app::{AccountCfg, App, KeyCfg, Settings, Strategy};
     use crate::store::Store;
     use axum::Json;
     use axum::http::{HeaderMap, StatusCode};

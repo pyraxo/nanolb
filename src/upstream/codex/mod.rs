@@ -1,4 +1,4 @@
-use crate::state::{Account, AccountCfg, App};
+use crate::app::{Account, AccountCfg, App};
 use crate::store::Usage;
 use crate::time::{now_ms, ts_iso};
 use axum::http::HeaderMap;
@@ -438,7 +438,7 @@ pub fn usage_row(key: &str, account: &str, model: &str, endpoint: &'static str, 
         cached: n(&u["input_tokens_details"]["cached_tokens"]),
         output: n(&u["output_tokens"]),
         reasoning: n(&u["output_tokens_details"]["reasoning_tokens"]),
-        cost: u["cost"].as_f64().unwrap_or_else(|| crate::pricing::cost(model, u)),
+        cost: u["cost"].as_f64().unwrap_or_else(|| crate::app::pricing::cost(model, u)),
         latency_ms: (now - started).max(0) as u64,
         ttfb_ms: (ttfb - started).max(0) as u64,
     }

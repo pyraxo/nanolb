@@ -2,8 +2,8 @@ use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const UNIT: &str = include_str!("../contrib/nanolb.service");
-const PLIST: &str = include_str!("../contrib/nanolb.plist");
+const UNIT: &str = include_str!("../../contrib/nanolb.service");
+const PLIST: &str = include_str!("../../contrib/nanolb.plist");
 const UNIT_PATH: &str = "/etc/systemd/system/nanolb.service";
 const SYSTEM_BIN: &str = "/usr/local/bin/nanolb";
 const SYSTEM_HOME: &str = "/var/lib/nanolb";

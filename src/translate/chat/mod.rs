@@ -234,7 +234,7 @@ fn usage_json(u: &Value, opts: &Opts, cost_model: &str) -> Value {
         "completion_tokens_details":{"reasoning_tokens":n(&u["output_tokens_details"]["reasoning_tokens"])},
     });
     if opts.openrouter {
-        v["cost"] = crate::pricing::cost(cost_model, u).into();
+        v["cost"] = crate::app::pricing::cost(cost_model, u).into();
         v["is_byok"] = false.into();
     }
     v

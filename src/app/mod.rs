@@ -1,3 +1,5 @@
+pub(crate) mod pricing;
+
 use crate::store::{Store, Usage};
 use crate::time::now_ms;
 use parking_lot::{Mutex, RwLock};
@@ -360,8 +362,8 @@ impl Default for Settings {
             strategy: Strategy::Preserve,
             sticky: true,
             max_attempts: 4,
-            models: crate::pricing::DEFAULT_MODELS.iter().map(|s| s.to_string()).collect(),
-            pricing: crate::pricing::defaults(),
+            models: crate::app::pricing::DEFAULT_MODELS.iter().map(|s| s.to_string()).collect(),
+            pricing: crate::app::pricing::defaults(),
             upstream_base: "https://chatgpt.com/backend-api".into(),
             codex_version: "0.160.0".into(),
             usage_poll_secs: 60,

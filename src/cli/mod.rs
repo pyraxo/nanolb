@@ -1,4 +1,8 @@
-use crate::client::Client;
+pub(crate) mod client;
+mod service;
+mod tui;
+
+use client::Client;
 use clap::{Args, Parser, Subcommand};
 use oauth2::{AuthUrl, ClientId, CsrfToken, PkceCodeChallenge, RedirectUrl, Scope, TokenUrl, basic::BasicClient};
 use serde_json::{Map, Value, json};
@@ -300,11 +304,11 @@ pub async fn run() -> ExitCode {
         }
         Cmd::Mcp => {
             let client = Arc::new(Client::from_env());
-            let exec: crate::mcp::Exec = Arc::new(move |op, args| {
+            let exec: crate::control::mcp::Exec = Arc::new(move |op, args| {
                 let c = client.clone();
                 Box::pin(async move { c.call(&op, args).await })
             });
-            crate::mcp::serve_stdio(exec).await
+            crate::control::mcp::serve_stdio(exec).await
         }
         cmd => dispatch(cmd).await,
     };
@@ -422,7 +426,7 @@ async fn dispatch(cmd: Cmd) -> Result<(), String> {
             codex_config(&c.url, key);
             Ok(())
         }
-        Cmd::Top { interval } => crate::tui::run(c, interval).await,
+        Cmd::Top { interval } => crate::cli::tui::run(c, interval).await,
     }
 }
 
@@ -555,7 +559,7 @@ async fn service(cmd: ServiceCmd) -> Result<(), String> {
             if running_pid().is_some() {
                 down().await?;
             }
-            let res = crate::service::install(&host, port)?;
+            let res = crate::cli::service::install(&host, port)?;
             let http = reqwest::Client::new();
             for _ in 0..50 {
                 tokio::time::sleep(Duration::from_millis(100)).await;
@@ -572,7 +576,7 @@ async fn service(cmd: ServiceCmd) -> Result<(), String> {
             Err(format!("service installed but not healthy within 5s: {res}"))
         }
         ServiceCmd::Uninstall { purge } => {
-            print(&crate::service::uninstall(purge)?);
+            print(&crate::cli::service::uninstall(purge)?);
             Ok(())
         }
     }

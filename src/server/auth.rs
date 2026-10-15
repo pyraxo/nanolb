@@ -1,4 +1,4 @@
-use crate::state::{App, Key};
+use crate::app::{App, Key};
 use crate::id::sha256_hex;
 use crate::server::error::{ApiError, ApiFormat};
 use axum::Json;

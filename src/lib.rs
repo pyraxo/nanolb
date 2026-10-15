@@ -1,31 +1,22 @@
-mod admin;
+mod app;
 mod cli;
-mod client;
-mod codex;
-mod endpoints;
+mod control;
 mod home;
 mod id;
-mod mcp;
-mod ops;
-mod pricing;
-mod proxy;
 mod server;
-mod service;
 mod sse;
-mod state;
 mod store;
 mod time;
 mod translate;
-mod tui;
-mod ws;
+mod upstream;
 
+pub use app::App;
 pub use cli::run;
 pub use server::router;
-pub use state::App;
 pub use store::Store;
 
-static APP: std::sync::OnceLock<std::sync::Arc<state::App>> = std::sync::OnceLock::new();
+static APP: std::sync::OnceLock<std::sync::Arc<app::App>> = std::sync::OnceLock::new();
 
-pub(crate) fn app() -> Option<&'static std::sync::Arc<state::App>> {
+pub(crate) fn app() -> Option<&'static std::sync::Arc<app::App>> {
     APP.get()
 }

@@ -1,6 +1,6 @@
-use crate::admin::{account_or_err, parse_since, s};
-use crate::codex;
-use crate::state::{App, Warmup};
+use crate::control::admin::{account_or_err, parse_since, s};
+use crate::upstream::codex;
+use crate::app::{App, Warmup};
 use crate::time::{now_ms, ts_iso};
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -63,7 +63,7 @@ pub fn sessions_purge(app: &App, a: &Value) -> Result<Value, String> {
     Ok(json!({"removed": removed.len()}))
 }
 
-fn codex_account(app: &App, a: &Value) -> Result<Arc<crate::state::Account>, String> {
+fn codex_account(app: &App, a: &Value) -> Result<Arc<crate::app::Account>, String> {
     let acc = account_or_err(app, a)?;
     if acc.cfg.read().kind != "codex" {
         return Err(format!("account {} is not a codex account", acc.id));

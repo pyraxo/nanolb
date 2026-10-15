@@ -1,5 +1,5 @@
-use crate::codex;
-use crate::state::{Account, App, Key};
+use crate::upstream::codex;
+use crate::app::{Account, App, Key};
 use crate::translate::{anthropic, chat};
 use crate::server::auth::api_key;
 use crate::server::error::{ApiError, ApiFormat};
@@ -559,7 +559,7 @@ fn file_owner(app: &App, up: &Value) -> Option<String> {
         .filter_map(|item| item["content"].as_array())
         .flatten()
         .find_map(|part| part["file_id"].as_str())
-        .and_then(|id| crate::endpoints::file_account(app, id))
+        .and_then(|id| crate::server::endpoints::file_account(app, id))
 }
 
 pub async fn responses(State(app): State<Arc<App>>, h: HeaderMap, body: Bytes) -> Response {
@@ -609,7 +609,7 @@ pub async fn models(State(app): State<Arc<App>>, h: HeaderMap) -> Response {
 }
 
 pub async fn openrouter_models(State(app): State<Arc<App>>) -> Response {
-    let per_tok = |m: &str, i: usize| crate::pricing::rates(m).map_or("0".to_string(), |r| format!("{}", r[i] / 1e6));
+    let per_tok = |m: &str, i: usize| crate::app::pricing::rates(m).map_or("0".to_string(), |r| format!("{}", r[i] / 1e6));
     let data: Vec<Value> = app
         .model_list()
         .into_iter()
@@ -683,7 +683,7 @@ pub async fn codex_models(State(app): State<Arc<App>>, h: HeaderMap, RawQuery(q)
 
 #[cfg(test)]
 mod tests {
-    use crate::state::{AccountCfg, App, KeyCfg, Settings};
+    use crate::app::{AccountCfg, App, KeyCfg, Settings};
     use crate::store::Store;
     use axum::routing::post;
     use futures_util::StreamExt;

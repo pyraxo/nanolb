@@ -1,4 +1,4 @@
-use crate::client::Client;
+use crate::cli::client::Client;
 use chrono::{DateTime, Utc};
 use ratatui::{
     DefaultTerminal, Frame,

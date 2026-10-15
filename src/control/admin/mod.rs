@@ -1,6 +1,6 @@
-use crate::codex;
+use crate::upstream::codex;
 use crate::server::auth::{admin_denied, is_admin};
-use crate::state::{App, KeyCfg, Limit, Settings, Warmup};
+use crate::app::{App, KeyCfg, Limit, Settings, Warmup};
 use crate::time::{now_ms, ts_iso};
 use axum::body::Bytes;
 use axum::extract::{Path, Query, State};
@@ -75,7 +75,7 @@ pub(crate) fn parse_since(v: &Value) -> Result<i64, String> {
         .unwrap_or_else(|| parse_time(v).map(|t| t.unwrap_or(0)))
 }
 
-pub(crate) fn account_or_err(app: &App, a: &Value) -> Result<Arc<crate::state::Account>, String> {
+pub(crate) fn account_or_err(app: &App, a: &Value) -> Result<Arc<crate::app::Account>, String> {
     app.find_account(s(a, "id")?)
 }
 
@@ -155,7 +155,7 @@ pub async fn op_call(app: &Arc<App>, op: &str, a: Value) -> Result<Value, String
                 .or(info["data"]["label"].as_str())
                 .unwrap_or("openrouter")
                 .to_string();
-            let cfg = crate::state::AccountCfg {
+            let cfg = crate::app::AccountCfg {
                 id: crate::id::sha256_hex(key)[..12].to_string(),
                 kind: "openrouter".into(),
                 label,
@@ -290,13 +290,13 @@ pub async fn op_call(app: &Arc<App>, op: &str, a: Value) -> Result<Value, String
                 .map(|(m, ctx)| json!({"provider": App::provider_for(&m), "id": m, "context_window": ctx}))
                 .collect::<Vec<_>>()
         ),
-        "sessions_list" => crate::ops::sessions_list(app, &a),
-        "session_delete" => crate::ops::session_delete(app, &a)?,
-        "sessions_purge" => crate::ops::sessions_purge(app, &a)?,
-        "reset_credits_list" => crate::ops::reset_credits_list(app, &a).await?,
-        "reset_credits_consume" => crate::ops::reset_credits_consume(app, &a).await?,
-        "plan" => crate::ops::plan(app, &a)?,
-        "analytics" => crate::ops::analytics(app, &a)?,
+        "sessions_list" => crate::control::ops::sessions_list(app, &a),
+        "session_delete" => crate::control::ops::session_delete(app, &a)?,
+        "sessions_purge" => crate::control::ops::sessions_purge(app, &a)?,
+        "reset_credits_list" => crate::control::ops::reset_credits_list(app, &a).await?,
+        "reset_credits_consume" => crate::control::ops::reset_credits_consume(app, &a).await?,
+        "plan" => crate::control::ops::plan(app, &a)?,
+        "analytics" => crate::control::ops::analytics(app, &a)?,
         _ => return Err(format!("unknown op `{op}`")),
     })
 }
