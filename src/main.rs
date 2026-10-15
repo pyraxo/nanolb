@@ -5,7 +5,9 @@ mod admin;
 mod cli;
 mod client;
 mod codex;
+mod endpoints;
 mod mcp;
+mod ops;
 mod pricing;
 mod proxy;
 mod service;
@@ -14,6 +16,7 @@ mod state;
 mod store;
 mod translate;
 mod tui;
+mod ws;
 
 use axum::Router;
 use axum::extract::DefaultBodyLimit;
@@ -83,8 +86,8 @@ pub fn router(app: Arc<state::App>) -> Router {
         .route("/admin/{op}", get(admin::http).post(admin::http))
         .route_layer(axum::middleware::from_fn_with_state(app.clone(), admin::guard));
     Router::new()
-        .route("/v1/responses", post(proxy::responses))
-        .route("/backend-api/codex/responses", post(proxy::responses))
+        .route("/v1/responses", post(proxy::responses).get(ws::upgrade))
+        .route("/backend-api/codex/responses", post(proxy::responses).get(ws::upgrade))
         .route("/backend-api/codex/models", get(proxy::codex_models))
         .route("/v1/chat/completions", post(proxy::chat_completions))
         .route("/api/v1/chat/completions", post(proxy::openrouter))
@@ -94,8 +97,11 @@ pub fn router(app: Arc<state::App>) -> Router {
         .route("/api/v1/auth/key", get(proxy::openrouter_key))
         .route("/v1/messages", post(proxy::messages))
         .route("/v1/messages/count_tokens", post(proxy::count_tokens))
+        .merge(endpoints::routes())
+        .merge(ws::routes())
         .route_layer(axum::middleware::from_fn_with_state(app.clone(), proxy::require_key))
         .merge(admin)
+        .merge(ops::routes())
         .route("/health", get(|| async { "ok" }))
         .layer(DefaultBodyLimit::max(256 << 20))
         .with_state(app)
