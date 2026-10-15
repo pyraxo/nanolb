@@ -174,7 +174,7 @@ async fn collect(job: Job, up: Upstream, reply: Reply) -> Result<Response, ApiEr
     }
     drop(guard);
     job.finished(&acc, tap.response.as_ref(), ttfb);
-    let Some(mut resp) = tap.response else {
+    let Some(mut resp) = tap.response.filter(Value::is_object) else {
         return Err(ApiError::new(job.format, 502, "upstream stream ended without a response"));
     };
     if resp["output"].as_array().is_none_or(Vec::is_empty) && !tap.items.is_empty() {
