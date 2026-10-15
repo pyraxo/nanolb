@@ -7,7 +7,7 @@ A fast load balancer for Codex (ChatGPT) subscription accounts.
 
 ## Features
 
-- **Low overhead**: about 0.1 ms added per request, streaming passthrough, pooled HTTP/2 connections and no database reads on the request path.
+- **Low overhead**: about 0.1 ms added per request, streaming passthrough, pooled HTTP/2 connections and no database reads on the request path. See [Performance](#performance).
 - **Cache-aware routing**: a conversation stays on one account until that account is limited, so upstream prompt caching keeps working.
 - **Automatic failover**: rate limits, server errors and connection failures are retried on another account before the first byte reaches the client.
 - **Multiple API formats**: OpenAI Responses (HTTP and WebSocket), OpenAI Chat Completions, OpenRouter and Anthropic Messages, plus files, transcription, images, embeddings and realtime voice.
@@ -26,6 +26,7 @@ A fast load balancer for Codex (ChatGPT) subscription accounts.
 - [Usage](#usage)
 - [Running as a service](#running-as-a-service)
 - [Configuration](#configuration)
+- [Performance](#performance)
 - [Documentation](#documentation)
 - [Contributing](#contributing)
 - [License](#license)
@@ -212,6 +213,24 @@ nanolb binds to `127.0.0.1` by default. For Tailscale, start it with `--host <ta
 | `NANOLB_URL` | `http://127.0.0.1:2455` | Server URL used by the CLI |
 
 Runtime settings (strategy, timeouts, pricing, compression and others) are stored in the database. View them with `nanolb settings get` and change them with `nanolb settings set <key> <value>`.
+
+## Performance
+
+Measured on Linux (Docker, aarch64) against a mock upstream that answers instantly, so the numbers show only the overhead nanolb adds. Streaming requests, two accounts, median of three runs.
+
+| Endpoint | Concurrency | Added latency (p50) | p99 | Throughput |
+|---|---|---|---|---|
+| `/v1/responses` | 1 | 0.10 ms | | 6,800 req/s |
+| `/v1/responses` | 64 | 1.8 ms | 5.5 ms | 26,400 req/s |
+| `/v1/chat/completions` | 1 | 0.15 ms | | 4,300 req/s |
+| `/v1/chat/completions` | 64 | 1.5 ms | 5.8 ms | 30,300 req/s |
+
+| Resource | Value |
+|---|---|
+| CPU per request | 0.13 to 0.21 ms |
+| Memory, idle | 30 MB |
+| Memory, under load | 40 to 95 MB |
+| Startup | 0.1 s |
 
 ## Documentation
 
