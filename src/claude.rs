@@ -182,6 +182,15 @@ fn apply_rate_headers(a: &Account, h: &reqwest::header::HeaderMap) {
     r.updated_at = now_ms();
 }
 
+fn billing(h: &reqwest::header::HeaderMap) -> &'static str {
+    let get = |k: &str| h.get(format!("anthropic-ratelimit-unified-{k}")).and_then(|v| v.to_str().ok());
+    match (get("overage-in-use"), get("status")) {
+        (Some("true"), _) => "extra_usage",
+        (_, Some(_)) => "plan",
+        _ => "",
+    }
+}
+
 fn limited_until(h: &reqwest::header::HeaderMap) -> i64 {
     let g = |k: &str| h.get(k).and_then(|v| v.to_str().ok()).and_then(|v| v.parse::<f64>().ok());
     g("anthropic-ratelimit-unified-reset")
@@ -372,13 +381,17 @@ pub async fn handle(app: Arc<App>, key: Arc<Key>, h: HeaderMap, req: Value, star
         }
         if status >= 400 {
             let limit_reset = limited_until(res.headers());
+            let account_limited = res
+                .headers()
+                .get("anthropic-ratelimit-unified-status")
+                .is_some_and(|v| v.as_bytes() == b"rejected");
             let text = res.text().await.unwrap_or_default();
             let msg = serde_json::from_str::<Value>(&text)
                 .ok()
                 .and_then(|v| v["error"]["message"].as_str().map(str::to_string))
                 .unwrap_or_else(|| text.chars().take(500).collect());
             let until = match status {
-                429 => Some(limit_reset),
+                429 if account_limited => Some(limit_reset),
                 401 => Some(now_ms() + 300_000),
                 500.. => Some(now_ms() + 5_000),
                 _ => None,
@@ -398,22 +411,22 @@ pub async fn handle(app: Arc<App>, key: Arc<Key>, h: HeaderMap, req: Value, star
             continue;
         }
         let ttfb = now_ms();
+        let bucket = billing(res.headers());
         if !stream {
             let bytes = res.bytes().await.unwrap_or_default();
             let v: Value = serde_json::from_slice(&bytes).unwrap_or_default();
-            app.record(
-                Some(&key),
-                crate::codex::usage_row(
-                    &key.cfg.id,
-                    &acc.id,
-                    &model,
-                    "anthropic",
-                    status,
-                    &usage_value(&model, &v["usage"]),
-                    started,
-                    ttfb,
-                ),
+            let mut row = crate::codex::usage_row(
+                &key.cfg.id,
+                &acc.id,
+                &model,
+                "anthropic",
+                status,
+                &usage_value(&model, &v["usage"]),
+                started,
+                ttfb,
             );
+            row.billing = bucket;
+            app.record(Some(&key), row);
             drop(guard);
             let mut r = (StatusCode::OK, bytes).into_response();
             r.headers_mut()
@@ -450,19 +463,18 @@ pub async fn handle(app: Arc<App>, key: Arc<Key>, h: HeaderMap, req: Value, star
                 }
             }
             let status = if ok { 200 } else { 499 };
-            app2.record(
-                Some(&key2),
-                crate::codex::usage_row(
-                    &key2.cfg.id,
-                    &acc.id,
-                    &model2,
-                    "anthropic",
-                    status,
-                    &usage_value(&model2, &usage),
-                    started,
-                    ttfb,
-                ),
+            let mut row = crate::codex::usage_row(
+                &key2.cfg.id,
+                &acc.id,
+                &model2,
+                "anthropic",
+                status,
+                &usage_value(&model2, &usage),
+                started,
+                ttfb,
             );
+            row.billing = bucket;
+            app2.record(Some(&key2), row);
         });
         let body = Body::from_stream(futures_util::stream::unfold(rx, |mut rx| async move {
             rx.recv().await.map(|b| (Ok::<_, Infallible>(b), rx))
@@ -473,16 +485,21 @@ pub async fn handle(app: Arc<App>, key: Arc<Key>, h: HeaderMap, req: Value, star
         r.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
         return r;
     }
+    if tried.is_empty()
+        && let Some(until) = app.next_available("claude", &key.cfg.accounts)
+    {
+        tracing::warn!(%model, until = %ts_iso(until), "all claude accounts rate limited");
+        app.record(
+            Some(&key),
+            crate::codex::usage_row(&key.cfg.id, "", &model, "anthropic", 429, &Value::Null, started, now_ms()),
+        );
+        return crate::proxy::limited(Kind::Anthropic, "claude", until);
+    }
     tracing::warn!(%model, status = last.0, error = %last.1, "claude request failed");
     app.record(
         Some(&key),
         crate::codex::usage_row(&key.cfg.id, "", &model, "anthropic", last.0, &Value::Null, started, now_ms()),
     );
-    if tried.is_empty()
-        && let Some(until) = app.next_available("claude", &key.cfg.accounts)
-    {
-        return crate::proxy::limited(Kind::Anthropic, "claude", until);
-    }
     error(Kind::Anthropic, last.0, &last.1)
 }
 

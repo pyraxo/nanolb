@@ -447,6 +447,7 @@ pub fn usage_row(key: &str, account: &str, model: &str, endpoint: &'static str, 
         cost: u["cost"].as_f64().unwrap_or_else(|| crate::pricing::cost(model, u)),
         latency_ms: (now - started).max(0) as u64,
         ttfb_ms: (ttfb - started).max(0) as u64,
+        billing: "",
     }
 }
 

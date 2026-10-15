@@ -640,7 +640,7 @@ impl App {
         tracing::info!(
             endpoint = u.endpoint, key = %u.key_id, account = %u.account_id, model = %u.model, status = u.status,
             input = u.input, cached = u.cached, output = u.output, reasoning = u.reasoning, cost_usd = u.cost,
-            latency_ms = u.latency_ms, ttfb_ms = u.ttfb_ms, "request"
+            latency_ms = u.latency_ms, ttfb_ms = u.ttfb_ms, billing = u.billing, "request"
         );
         if let Some(k) = key {
             k.add(u.ts, u.input + u.output, u.cost);
