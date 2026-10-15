@@ -28,7 +28,7 @@ pub async fn run() -> ExitCode {
     let args = Cli::parse();
     let res = match args.cmd {
         Cmd::Serve { host, port } => {
-            init_tracing();
+            let _log_guard = init_tracing();
             crate::server::serve(host, port).await
         }
         Cmd::Mcp => crate::control::mcp::serve_stdio(Client::from_env())
@@ -45,17 +45,21 @@ pub async fn run() -> ExitCode {
     }
 }
 
-fn init_tracing() {
+fn init_tracing() -> tracing_appender::non_blocking::WorkerGuard {
     let filter = tracing_subscriber::EnvFilter::try_from_env("NANOLB_LOG").unwrap_or_else(|_| "info".into());
+    let (writer, guard) = tracing_appender::non_blocking::NonBlockingBuilder::default()
+        .lossy(false)
+        .finish(std::io::stderr());
     let fmt = tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stderr()))
-        .with_writer(std::io::stderr);
+        .with_writer(writer);
     if std::env::var("NANOLB_LOG_FORMAT").is_ok_and(|f| f == "json") {
         fmt.json().init();
     } else {
         fmt.init();
     }
+    guard
 }
 
 async fn dispatch(cmd: Cmd) -> anyhow::Result<()> {
