@@ -1,7 +1,8 @@
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 
-pub const DEFAULT_MODELS: &[&str] = &[
+pub(crate) const DEFAULT_MODELS: &[&str] = &[
     "gpt-6.1-sol",
     "gpt-6-sol",
     "gpt-6-astra",
@@ -32,26 +33,56 @@ const TABLE: &[(&str, [f64; 3])] = &[
     ("gpt-5", [1.25, 0.125, 10.0]),
 ];
 
-pub fn defaults() -> HashMap<String, [f64; 3]> {
-    TABLE.iter().map(|(k, v)| (k.to_string(), *v)).collect()
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(from = "[f64; 3]", into = "[f64; 3]")]
+pub(crate) struct Rates {
+    pub(crate) input: f64,
+    pub(crate) cached: f64,
+    pub(crate) output: f64,
 }
 
-pub fn rates(model: &str) -> Option<[f64; 3]> {
-    let s = crate::app()?.settings();
-    if let Some(r) = s.pricing.get(model) {
-        return Some(*r);
+impl From<[f64; 3]> for Rates {
+    fn from([input, cached, output]: [f64; 3]) -> Self {
+        Self { input, cached, output }
     }
-    s.pricing
-        .iter()
-        .filter(|(k, _)| model.starts_with(k.as_str()))
-        .max_by_key(|(k, _)| k.len())
-        .map(|(_, v)| *v)
 }
 
-pub fn cost(model: &str, usage: &Value) -> f64 {
-    let Some([inp, cached_rate, out]) = rates(model) else { return 0.0 };
-    let input = usage["input_tokens"].as_f64().unwrap_or(0.0);
-    let cached = usage["input_tokens_details"]["cached_tokens"].as_f64().unwrap_or(0.0);
-    let output = usage["output_tokens"].as_f64().unwrap_or(0.0);
-    ((input - cached).max(0.0) * inp + cached * cached_rate + output * out) / 1e6
+impl From<Rates> for [f64; 3] {
+    fn from(r: Rates) -> Self {
+        [r.input, r.cached, r.output]
+    }
+}
+
+impl Rates {
+    pub(crate) fn cost(self, usage: &Value) -> f64 {
+        let input = usage["input_tokens"].as_f64().unwrap_or(0.0);
+        let cached = usage["input_tokens_details"]["cached_tokens"].as_f64().unwrap_or(0.0);
+        let output = usage["output_tokens"].as_f64().unwrap_or(0.0);
+        ((input - cached).max(0.0) * self.input + cached * self.cached + output * self.output) / 1e6
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(transparent)]
+pub(crate) struct Pricing(HashMap<String, Rates>);
+
+impl Pricing {
+    pub(crate) fn defaults() -> Self {
+        Self(TABLE.iter().map(|(k, v)| ((*k).to_owned(), Rates::from(*v))).collect())
+    }
+
+    pub(crate) fn rates(&self, model: &str) -> Option<Rates> {
+        if let Some(r) = self.0.get(model) {
+            return Some(*r);
+        }
+        self.0
+            .iter()
+            .filter(|(k, _)| model.starts_with(k.as_str()))
+            .max_by_key(|(k, _)| k.len())
+            .map(|(_, v)| *v)
+    }
+
+    pub(crate) fn cost(&self, model: &str, usage: &Value) -> f64 {
+        self.rates(model).map_or(0.0, |r| r.cost(usage))
+    }
 }

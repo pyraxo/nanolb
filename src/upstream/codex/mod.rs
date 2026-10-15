@@ -1,12 +1,11 @@
-use crate::app::{Account, AccountCfg, App};
-use crate::store::Usage;
+use crate::app::{Account, AccountCfg, App, LoginState, Provider};
+use crate::store::{Endpoint, Usage, UsageMeta};
 use crate::time::{now_ms, ts_iso};
 use axum::http::HeaderMap;
 use base64::Engine;
 use futures_util::StreamExt;
 use serde_json::{Value, json};
 use std::sync::Arc;
-use std::sync::atomic::Ordering::Relaxed;
 use std::time::Duration;
 
 pub const ISSUER: &str = "https://auth.openai.com";
@@ -76,7 +75,7 @@ pub fn account_from_tokens(id_token: &str, access: &str, refresh: &str, label: O
     let exp = claims(access).exp;
     Ok(AccountCfg {
         id: crate::id::sha256_hex(&format!("{}:{}", c.account_id, c.email))[..12].to_string(),
-        kind: "codex".into(),
+        provider: Provider::Codex,
         label: label.map_or_else(|| c.email.clone(), str::to_string),
         email: c.email,
         plan: c.plan,
@@ -103,20 +102,6 @@ pub fn account_from_auth_json(v: &Value, label: Option<&str>) -> Result<AccountC
     account_from_tokens(get("id_token")?, get("access_token")?, get("refresh_token")?, label)
 }
 
-pub fn add_account(app: &App, mut cfg: AccountCfg) -> Arc<Account> {
-    if let Some(old) = app.account(&cfg.id) {
-        let o = old.cfg.read();
-        cfg.enabled = o.enabled;
-        cfg.priority = o.priority;
-        cfg.warmup = o.warmup.clone();
-        cfg.created_at = o.created_at;
-    }
-    let a = app.upsert_account(cfg);
-    a.cooldown_until.store(0, Relaxed);
-    *a.last_error.lock() = None;
-    a
-}
-
 pub async fn exchange_code(http: &reqwest::Client, code: &str, verifier: &str, redirect_uri: &str) -> Result<Value, String> {
     let res = http
         .post(format!("{ISSUER}/oauth/token"))
@@ -139,7 +124,7 @@ pub async fn exchange_code(http: &reqwest::Client, code: &str, verifier: &str, r
 }
 
 pub async fn ensure_fresh(app: &Arc<App>, a: &Arc<Account>, force: bool) -> Result<(), String> {
-    if a.cfg.read().kind == "openrouter" {
+    if a.provider() == Provider::OpenRouter {
         return Ok(());
     }
     let (app, a) = (app.clone(), a.clone());
@@ -197,7 +182,7 @@ async fn refresh_inner(app: &App, a: &Account, force: bool) -> Result<(), String
         }
         c.last_refresh = now_ms();
     }
-    app.save_account(a);
+    app.accounts.save(&app.store, a).map_err(|e| e.to_string())?;
     tracing::info!(account = %a.id, expires_at = %ts_iso(a.cfg.read().expires_at), "token refreshed");
     Ok(())
 }
@@ -368,7 +353,7 @@ pub async fn fetch_models(app: &App, a: &Account) -> Result<(), String> {
         .filter_map(|m| Some((m["slug"].as_str()?.to_string(), m["context_window"].as_u64().unwrap_or(272_000))))
         .collect();
     if !models.is_empty() {
-        *app.live_models.write() = models;
+        app.models.set(models);
     }
     Ok(())
 }
@@ -416,32 +401,22 @@ pub async fn warmup(app: &Arc<App>, a: &Arc<Account>) -> Value {
         }
     }
     tracing::info!(account = %a.id, %model, status, "warmup sent");
-    app.record(None, usage_row("", &a.id, &model, "warmup", status, &usage, started, started));
+    let meta = UsageMeta {
+        key_id: "",
+        account_id: &a.id,
+        model: &model,
+        endpoint: Endpoint::Warmup,
+        started,
+        ttfb: started,
+    };
+    app.record(None, Usage::new(meta, status, &usage, &app.settings().pricing));
     if let Some(w) = a.cfg.write().warmup.as_mut() {
         w.last_fired = now_ms();
     }
-    app.save_account(a);
-    json!({"ok": true, "status": status, "at": ts_iso(now_ms()), "usage": usage})
-}
-
-pub fn usage_row(key: &str, account: &str, model: &str, endpoint: &'static str, status: u16, u: &Value, started: i64, ttfb: i64) -> Usage {
-    let now = now_ms();
-    let n = |v: &Value| v.as_u64().unwrap_or(0);
-    Usage {
-        ts: now,
-        key_id: key.into(),
-        account_id: account.into(),
-        model: model.into(),
-        endpoint,
-        status,
-        input: n(&u["input_tokens"]),
-        cached: n(&u["input_tokens_details"]["cached_tokens"]),
-        output: n(&u["output_tokens"]),
-        reasoning: n(&u["output_tokens_details"]["reasoning_tokens"]),
-        cost: u["cost"].as_f64().unwrap_or_else(|| crate::app::pricing::cost(model, u)),
-        latency_ms: (now - started).max(0) as u64,
-        ttfb_ms: (ttfb - started).max(0) as u64,
+    if let Err(e) = app.accounts.save(&app.store, a) {
+        tracing::error!(account = %a.id, error = %e, "cannot save account");
     }
+    json!({"ok": true, "status": status, "at": ts_iso(now_ms()), "usage": usage})
 }
 
 pub async fn device_login_start(app: Arc<App>, label: Option<String>) -> Result<Value, String> {
@@ -469,21 +444,21 @@ pub async fn device_login_start(app: Arc<App>, label: Option<String>) -> Result<
         .unwrap_or(5);
     let login_id = crate::id::random_hex(8);
     let expires = now_ms() + 15 * 60_000;
-    app.logins.lock().insert(login_id.clone(), json!({"status": "pending"}));
+    app.logins.set(login_id.clone(), LoginState::Pending);
     let (app2, id2, code2) = (app.clone(), login_id.clone(), user_code.clone());
     tokio::spawn(async move {
         let result = poll_device(&app2, &device_id, &code2, interval, expires, label.as_deref()).await;
-        let v = match result {
+        let state = match result {
             Ok(a) => {
                 tracing::info!(account = %a.id, "device login completed");
-                json!({"status": "done", "account": a.view()})
+                LoginState::Done { account: a.view() }
             }
             Err(e) => {
                 tracing::warn!(error = %e, "device login failed");
-                json!({"status": "error", "error": e})
+                LoginState::Error { error: e }
             }
         };
-        app2.logins.lock().insert(id2, v);
+        app2.logins.set(id2, state);
     });
     Ok(json!({
         "login_id": login_id, "verification_url": format!("{ISSUER}/codex/device"),
@@ -522,7 +497,7 @@ async fn poll_device(
         let t = exchange_code(&app.http, code, verifier, &format!("{ISSUER}/deviceauth/callback")).await?;
         let s = |k: &str| t[k].as_str().unwrap_or_default().to_string();
         let cfg = account_from_tokens(&s("id_token"), &s("access_token"), &s("refresh_token"), label)?;
-        return Ok(add_account(app, cfg));
+        return app.accounts.add(&app.store, cfg).map_err(|e| e.to_string());
     }
     Err("device login expired".into())
 }
@@ -532,13 +507,13 @@ pub fn spawn_background(app: Arc<App>) {
     tokio::spawn(async move {
         let _ = a1.http.head(a1.settings().upstream_base.clone()).send().await;
         loop {
-            let accs = a1.accounts.read().clone();
-            if let Some(a) = accs.iter().find(|a| a.cfg.read().kind == "codex" && a.available(now_ms())) {
+            let accs = a1.accounts.snapshot();
+            if let Some(a) = accs.iter().find(|a| a.provider() == Provider::Codex && a.available(now_ms())) {
                 let _ = fetch_models(&a1, a).await;
             }
-            for a in accs.iter().filter(|a| a.cfg.read().enabled && a.cfg.read().kind != "openrouter") {
+            for a in accs.iter().filter(|a| a.cfg.read().enabled && a.provider() != Provider::OpenRouter) {
                 if ensure_fresh(&a1, a, false).await.is_ok()
-                    && a.cfg.read().kind == "codex"
+                    && a.provider() == Provider::Codex
                     && let Err(e) = fetch_usage(&a1, a).await
                 {
                     tracing::warn!(account = %a.id, error = %e, "usage poll failed");
@@ -553,8 +528,7 @@ pub fn spawn_background(app: Arc<App>) {
         loop {
             tokio::time::sleep(Duration::from_secs(20)).await;
             let now = chrono::Local::now();
-            let accs = app.accounts.read().clone();
-            for a in accs {
+            for a in app.accounts.snapshot() {
                 let due = {
                     let c = a.cfg.read();
                     c.enabled && c.warmup.as_ref().is_some_and(|w| warmup_due(&w.cron, w.last_fired, now))
@@ -565,7 +539,9 @@ pub fn spawn_background(app: Arc<App>) {
                 if let Some(w) = a.cfg.write().warmup.as_mut() {
                     w.last_fired = now_ms();
                 }
-                app.save_account(&a);
+                if let Err(e) = app.accounts.save(&app.store, &a) {
+                    tracing::error!(account = %a.id, error = %e, "cannot save account");
+                }
                 if window_idle(&a) {
                     let app = app.clone();
                     tokio::spawn(async move {

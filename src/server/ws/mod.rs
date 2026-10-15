@@ -1,9 +1,9 @@
-use crate::upstream::codex;
-use crate::server::http::Inflight;
+use crate::app::{Account, App, Inflight, Key, Provider, Sessions, canonical_model};
 use crate::server::auth::api_key;
 use crate::server::error::{ApiError, ApiFormat};
-use crate::app::{Account, App, Key};
+use crate::store::{Endpoint, Usage, UsageMeta};
 use crate::time::now_ms;
+use crate::upstream::codex;
 use axum::Router;
 use axum::extract::ws::{self, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, RawQuery, State};
@@ -14,7 +14,6 @@ use bytes::Bytes;
 use futures::{SinkExt, StreamExt};
 use serde_json::{Value, json};
 use std::sync::Arc;
-use std::sync::atomic::Ordering::Relaxed;
 use std::time::Duration;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::protocol::CloseFrame;
@@ -173,7 +172,7 @@ fn to_upstream(m: ws::Message) -> Option<Message> {
 
 impl Conn {
     fn session(&self) -> Option<String> {
-        self.cache.as_ref().map(|c| format!("{}\u{1f}codex\u{1f}{c}", self.key.cfg.id))
+        self.cache.as_ref().map(|c| Sessions::key(&self.key.cfg.id, Provider::Codex, c))
     }
 
     async fn connect(&mut self) -> Result<HeaderMap, Fail> {
@@ -183,7 +182,10 @@ impl Conn {
         let mut refreshed: Vec<String> = vec![];
         let mut last = Fail(503, "no available accounts".into());
         for _ in 0..s.max_attempts.max(1) {
-            let Some(acc) = self.app.pick("codex", &self.key.cfg.accounts, &self.tried, session.as_deref()) else {
+            let Some(acc) = self
+                .app
+                .pick(Provider::Codex, &self.key.cfg.accounts, &self.tried, session.as_deref())
+            else {
                 break;
             };
             if let Err(e) = codex::ensure_fresh(&self.app, &acc, false).await {
@@ -206,10 +208,9 @@ impl Conn {
             match tokio::time::timeout(timeout, tokio_tungstenite::connect_async(req)).await {
                 Ok(Ok((ws, resp))) => {
                     codex::apply_rate_headers(&acc, resp.headers());
-                    acc.inflight.fetch_add(1, Relaxed);
                     self.up = Some(Link {
                         ws,
-                        _guard: Inflight(acc.clone()),
+                        _guard: acc.acquire(),
                         acc,
                     });
                     return Ok(pass_headers(resp.headers()));
@@ -257,7 +258,7 @@ impl Conn {
 
     fn limited_until(&self, f: &Fail) -> Option<i64> {
         (f.0 == 503)
-            .then(|| self.app.next_available("codex", &self.key.cfg.accounts))
+            .then(|| self.app.accounts.next_available(Provider::Codex, &self.key.cfg.accounts))
             .flatten()
     }
 
@@ -275,7 +276,7 @@ impl Conn {
 
     fn fail_response(&self, f: &Fail) -> Response {
         match self.limited_until(f) {
-            Some(until) => ApiError::limited(ApiFormat::Responses, "codex", until).into_response(),
+            Some(until) => ApiError::limited(ApiFormat::Responses, Provider::Codex, until).into_response(),
             None => ApiError::new(ApiFormat::Responses, f.0, &f.1).into_response(),
         }
     }
@@ -285,16 +286,15 @@ impl Conn {
             return;
         };
         let model = resp["model"].as_str().unwrap_or(&p.model);
-        let row = codex::usage_row(
-            &self.key.cfg.id,
-            p.acc.as_ref().map_or("", |a| &a.id),
+        let meta = UsageMeta {
+            key_id: &self.key.cfg.id,
+            account_id: p.acc.as_ref().map_or("", |a| &a.id),
             model,
-            "responses_ws",
-            status,
-            &resp["usage"],
-            p.started,
-            p.ttfb.unwrap_or(p.started),
-        );
+            endpoint: Endpoint::ResponsesWs,
+            started: p.started,
+            ttfb: p.ttfb.unwrap_or(p.started),
+        };
+        let row = Usage::new(meta, status, &resp["usage"], &self.app.settings().pricing);
         self.app.record(Some(&self.key), row);
     }
 
@@ -309,15 +309,15 @@ impl Conn {
         let started = now_ms();
         let reject = |s: u16, t: &str, m: &str| ws::Message::Text(error_frame(s, t, m, None).into());
         if let Err(e) = self.key.check(started) {
-            return client.send(reject(429, "rate_limit_exceeded", &e)).await.is_ok();
+            return client.send(reject(429, "rate_limit_exceeded", &e.to_string())).await.is_ok();
         }
         let requested = v["model"].as_str().unwrap_or_default().to_string();
-        let model = App::canonical_model(&requested).to_string();
+        let model = canonical_model(&requested).to_string();
         if !self.key.allows_model(&requested) && !self.key.allows_model(&model) {
             let m = format!("model {requested} not allowed for this key");
             return client.send(reject(403, "invalid_request_error", &m)).await.is_ok();
         }
-        if App::provider_for(&model) != "codex" {
+        if Provider::for_model(&model) != Provider::Codex {
             let m = format!("model {model} is not served over websocket; use POST /v1/responses");
             return client.send(reject(400, "invalid_request_error", &m)).await.is_ok();
         }
@@ -374,10 +374,17 @@ impl Conn {
             {
                 tracing::warn!(status = f.0, error = %f.1, "websocket request failed");
                 let model = self.pending.take().map(|p| p.model).unwrap_or_default();
-                self.app.record(
-                    Some(&self.key),
-                    codex::usage_row(&self.key.cfg.id, "", &model, "responses_ws", f.0, &Value::Null, now_ms(), now_ms()),
-                );
+                let now = now_ms();
+                let meta = UsageMeta {
+                    key_id: &self.key.cfg.id,
+                    account_id: "",
+                    model: &model,
+                    endpoint: Endpoint::ResponsesWs,
+                    started: now,
+                    ttfb: now,
+                };
+                self.app
+                    .record(Some(&self.key), Usage::new(meta, f.0, &Value::Null, &self.app.settings().pricing));
                 return client.send(ws::Message::Text(self.fail_frame(&f).into())).await.is_ok();
             }
             let acc = self.up.as_ref().map(|l| l.acc.clone());
@@ -594,7 +601,7 @@ pub async fn upgrade(State(app): State<Arc<App>>, h: HeaderMap, ws: WebSocketUpg
         return ApiError::new(ApiFormat::Responses, 401, "invalid or missing api key").into_response();
     };
     if let Err(e) = key.check(now_ms()) {
-        return ApiError::new(ApiFormat::Responses, 429, &e).into_response();
+        return ApiError::new(ApiFormat::Responses, 429, e.to_string()).into_response();
     }
     let mut conn = Conn {
         app,
@@ -643,7 +650,7 @@ fn with_query(url: String, q: Option<&str>) -> String {
 
 fn authed(app: &App, h: &HeaderMap) -> Result<Arc<Key>, Fail> {
     let key = api_key(app, h).ok_or_else(|| Fail(401, "invalid or missing api key".into()))?;
-    key.check(now_ms()).map_err(|e| Fail(429, e))?;
+    key.check(now_ms()).map_err(|e| Fail(429, e.to_string()))?;
     Ok(key)
 }
 
@@ -657,7 +664,7 @@ async fn calls(app: Arc<App>, h: HeaderMap, target: String, body: Bytes) -> Resp
     let mut tried: Vec<String> = vec![];
     let mut last = Fail(503, "no available accounts".into());
     for _ in 0..s.max_attempts.max(1) {
-        let Some(acc) = app.pick("codex", &key.cfg.accounts, &tried, None) else {
+        let Some(acc) = app.pick(Provider::Codex, &key.cfg.accounts, &tried, None) else {
             break;
         };
         tried.push(acc.id.clone());
@@ -716,21 +723,17 @@ async fn calls(app: Arc<App>, h: HeaderMap, target: String, body: Bytes) -> Resp
                 .and_then(|v| v.to_str().ok())
                 .and_then(call_id_from_location)
         {
-            app.sticky.lock().insert(call_binding(&key, id), (acc.id.clone(), now_ms()));
+            app.sessions.bind(call_binding(&key, id), acc.id.clone(), now_ms());
         }
-        app.record(
-            Some(&key),
-            codex::usage_row(
-                &key.cfg.id,
-                &acc.id,
-                "realtime",
-                "realtime_call",
-                status,
-                &Value::Null,
-                started,
-                now_ms(),
-            ),
-        );
+        let meta = UsageMeta {
+            key_id: &key.cfg.id,
+            account_id: &acc.id,
+            model: "realtime",
+            endpoint: Endpoint::RealtimeCall,
+            started,
+            ttfb: now_ms(),
+        };
+        app.record(Some(&key), Usage::new(meta, status, &Value::Null, &s.pricing));
         let mut out = Response::new(axum::body::Body::from(bytes));
         *out.status_mut() = axum::http::StatusCode::from_u16(status).unwrap_or(axum::http::StatusCode::BAD_GATEWAY);
         for (k, v) in headers.iter() {
@@ -740,8 +743,11 @@ async fn calls(app: Arc<App>, h: HeaderMap, target: String, body: Bytes) -> Resp
         }
         return out;
     }
-    match (last.0 == 503).then(|| app.next_available("codex", &key.cfg.accounts)).flatten() {
-        Some(until) => ApiError::limited(ApiFormat::Responses, "codex", until).into_response(),
+    match (last.0 == 503)
+        .then(|| app.accounts.next_available(Provider::Codex, &key.cfg.accounts))
+        .flatten()
+    {
+        Some(until) => ApiError::limited(ApiFormat::Responses, Provider::Codex, until).into_response(),
         None => ApiError::new(ApiFormat::Responses, last.0, &last.1).into_response(),
     }
 }
@@ -753,8 +759,8 @@ async fn live(app: Arc<App>, h: HeaderMap, ws: WebSocketUpgrade, call_id: Option
     };
     let owner = match &call_id {
         Some(c) => {
-            let bound = app.sticky.lock().get(&call_binding(&key, c)).map(|(id, _)| id.clone());
-            match bound.and_then(|id| app.account(&id)) {
+            let bound = app.sessions.pinned(&call_binding(&key, c));
+            match bound.and_then(|id| app.accounts.get(&id)) {
                 Some(a) => Some(a),
                 None => return ApiError::new(ApiFormat::Responses, 404, "realtime call binding not found or expired").into_response(),
             }
@@ -768,7 +774,7 @@ async fn live(app: Arc<App>, h: HeaderMap, ws: WebSocketUpgrade, call_id: Option
         let acc = match &owner {
             Some(a) if tried.is_empty() => a.clone(),
             Some(_) => break,
-            None => match app.pick("codex", &key.cfg.accounts, &tried, None) {
+            None => match app.pick(Provider::Codex, &key.cfg.accounts, &tried, None) {
                 Some(a) => a,
                 None => break,
             },
@@ -801,10 +807,9 @@ async fn live(app: Arc<App>, h: HeaderMap, ws: WebSocketUpgrade, call_id: Option
                     Some(p) => ws.protocols([p]),
                     None => ws,
                 };
-                acc.inflight.fetch_add(1, Relaxed);
                 let link = Link {
                     ws: up,
-                    _guard: Inflight(acc.clone()),
+                    _guard: acc.acquire(),
                     acc,
                 };
                 return ws.on_upgrade(move |client| relay_live(app, key, link, client, model));
@@ -877,7 +882,15 @@ async fn relay_live(app: Arc<App>, key: Arc<Key>, mut up: Link, mut client: WebS
                                 "input_tokens": u["input_tokens"], "output_tokens": u["output_tokens"],
                                 "input_tokens_details": {"cached_tokens": u["input_token_details"]["cached_tokens"]},
                             });
-                            let row = codex::usage_row(&key.cfg.id, &up.acc.id, &model, "realtime", 200, &usage, started, started);
+                            let meta = UsageMeta {
+                                key_id: &key.cfg.id,
+                                account_id: &up.acc.id,
+                                model: &model,
+                                endpoint: Endpoint::Realtime,
+                                started,
+                                ttfb: started,
+                            };
+                            let row = Usage::new(meta, 200, &usage, &app.settings().pricing);
                             app.record(Some(&key), row);
                         }
                         _ => {}
@@ -997,36 +1010,47 @@ mod tests {
         let hits_b = Arc::new(AtomicUsize::new(0));
         let base = mock_upstream(hits_b.clone()).await;
         let dir = std::env::temp_dir().join(format!("nanolb-ws-{}", crate::id::random_hex(4)));
-        let app = App::new(Store::open(&dir).unwrap(), "admin".into());
+        let app = App::new(Store::open(&dir).unwrap(), "admin".into()).unwrap();
         app.save_settings(Settings {
             upstream_base: base,
             ..Default::default()
-        });
+        })
+        .unwrap();
         let far = crate::time::now_ms() + 86_400_000;
         for (id, priority) in [("a", 0), ("b", 1)] {
-            app.upsert_account(AccountCfg {
-                id: id.into(),
-                kind: "codex".into(),
-                enabled: true,
-                priority,
-                chatgpt_account_id: format!("acct-{id}"),
-                expires_at: far,
-                last_refresh: crate::time::now_ms(),
-                ..Default::default()
-            });
+            app.accounts
+                .upsert(
+                    &app.store,
+                    AccountCfg {
+                        id: id.into(),
+                        provider: crate::app::Provider::Codex,
+                        enabled: true,
+                        priority,
+                        chatgpt_account_id: format!("acct-{id}"),
+                        expires_at: far,
+                        last_refresh: crate::time::now_ms(),
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
         }
-        app.save_key(KeyCfg {
-            id: "k".into(),
-            name: "k".into(),
-            hash: crate::id::sha256_hex("nlb-test"),
-            prefix: "nlb-test".into(),
-            accounts: vec![],
-            models: vec![],
-            limits: vec![],
-            enabled: true,
-            expires_at: None,
-            created_at: 0,
-        });
+        app.keys
+            .save(
+                &app.store,
+                KeyCfg {
+                    id: "k".into(),
+                    name: "k".into(),
+                    hash: crate::id::sha256_hex("nlb-test"),
+                    prefix: "nlb-test".into(),
+                    accounts: vec![],
+                    models: vec![],
+                    limits: vec![],
+                    enabled: true,
+                    expires_at: None,
+                    created_at: 0,
+                },
+            )
+            .unwrap();
         let srv = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("ws://{}/v1/responses", srv.local_addr().unwrap());
         let probe = app.clone();
@@ -1049,6 +1073,6 @@ mod tests {
 
         assert_eq!(got, EVENTS.map(String::from));
         assert_eq!(hits_b.load(Ordering::SeqCst), 1);
-        assert!(!probe.account("a").unwrap().available(crate::time::now_ms()));
+        assert!(!probe.accounts.get("a").unwrap().available(crate::time::now_ms()));
     }
 }

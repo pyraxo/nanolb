@@ -1,3 +1,5 @@
+use crate::app::Provider;
+use crate::store::Endpoint;
 use crate::time::{now_ms, ts_iso};
 use crate::translate::anthropic;
 use axum::Json;
@@ -14,12 +16,12 @@ pub(crate) enum ApiFormat {
 }
 
 impl ApiFormat {
-    pub(crate) const fn endpoint(self) -> &'static str {
+    pub(crate) const fn endpoint(self) -> Endpoint {
         match self {
-            Self::Responses => "responses",
-            Self::Chat => "chat",
-            Self::OpenRouter => "openrouter",
-            Self::Anthropic => "anthropic",
+            Self::Responses => Endpoint::Responses,
+            Self::Chat => Endpoint::Chat,
+            Self::OpenRouter => Endpoint::OpenRouter,
+            Self::Anthropic => Endpoint::Anthropic,
         }
     }
 }
@@ -47,10 +49,14 @@ impl ApiError {
         Self::new(format, 401, "invalid or missing api key")
     }
 
-    pub(crate) fn limited(format: ApiFormat, provider: &str, until: i64) -> Self {
+    pub(crate) fn limited(format: ApiFormat, provider: Provider, until: i64) -> Self {
         Self {
             retry_after: Some(((until - now_ms()) / 1000).max(1)),
-            ..Self::new(format, 429, format!("all {provider} accounts are rate limited until {}", ts_iso(until)))
+            ..Self::new(
+                format,
+                429,
+                format!("all {provider} accounts are rate limited until {}", ts_iso(until)),
+            )
         }
     }
 

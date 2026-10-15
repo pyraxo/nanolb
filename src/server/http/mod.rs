@@ -1,10 +1,11 @@
-use crate::upstream::codex;
-use crate::app::{Account, App, Key};
-use crate::translate::{anthropic, chat};
+use crate::app::{Account, App, Inflight, Key, Provider, Sessions, canonical_model};
 use crate::server::auth::api_key;
 use crate::server::error::{ApiError, ApiFormat};
 use crate::sse;
+use crate::store::{Usage, UsageMeta};
 use crate::time::now_ms;
+use crate::translate::{anthropic, chat};
+use crate::upstream::codex;
 use axum::body::{Body, Bytes};
 use axum::extract::{RawQuery, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
@@ -35,14 +36,6 @@ fn session_key(h: &HeaderMap, client: &Value, up: &Value) -> String {
             }
             crate::id::sha256_hex(&seed)[..24].to_string()
         })
-}
-
-pub struct Inflight(pub Arc<Account>);
-
-impl Drop for Inflight {
-    fn drop(&mut self) {
-        self.0.inflight.fetch_sub(1, Relaxed);
-    }
 }
 
 struct Upstream {
@@ -77,8 +70,8 @@ fn is_failure(ev: &Event) -> bool {
         || ev.data.starts_with("{\"type\":\"response.failed\"")
 }
 
-fn upstream_request(app: &App, acc: &Account, provider: &str, h: Option<&HeaderMap>, cache_key: &str) -> reqwest::RequestBuilder {
-    if provider == "openrouter" {
+fn upstream_request(app: &App, acc: &Account, provider: Provider, h: Option<&HeaderMap>, cache_key: &str) -> reqwest::RequestBuilder {
+    if provider == Provider::OpenRouter {
         return app
             .http
             .post(format!("{}/responses", app.settings().openrouter_base))
@@ -121,13 +114,13 @@ fn classify(status: u16, err: &Value) -> Failure {
 async fn send(
     app: &Arc<App>,
     key: &Key,
-    provider: &str,
+    provider: Provider,
     h: Option<&HeaderMap>,
     up: &Value,
     session: &str,
 ) -> Result<Upstream, (u16, String)> {
     let raw = serde_json::to_vec(up).unwrap();
-    let (body, compressed) = match provider == "codex" && app.settings().compress_upstream {
+    let (body, compressed) = match provider == Provider::Codex && app.settings().compress_upstream {
         true => match zstd::stream::encode_all(&raw[..], 3) {
             Ok(c) => (Bytes::from(c), true),
             Err(_) => (Bytes::from(raw), false),
@@ -159,8 +152,7 @@ async fn send(
             last = (502, e);
             continue;
         }
-        acc.inflight.fetch_add(1, Relaxed);
-        let guard = Inflight(acc.clone());
+        let guard = acc.acquire();
         let mut req = upstream_request(app, &acc, provider, h, cache_key).header(header::CONTENT_TYPE, "application/json");
         if compressed {
             req = req.header(header::CONTENT_ENCODING, "zstd");
@@ -184,7 +176,7 @@ async fn send(
                 continue;
             }
         };
-        if provider == "codex" {
+        if provider == Provider::Codex {
             codex::apply_rate_headers(&acc, res.headers());
         }
         let status = res.status().as_u16();
@@ -219,8 +211,8 @@ async fn send(
             continue;
         }
         let mut headers = passthrough_headers(res.headers());
-        if provider == "codex" {
-            for (k, v) in app.pool_rate_headers(&key.cfg.accounts) {
+        if provider == Provider::Codex {
+            for (k, v) in app.accounts.pool_rate_headers(&key.cfg.accounts) {
                 if let Ok(v) = HeaderValue::from_str(&v) {
                     headers.insert(k, v);
                 }
@@ -350,16 +342,15 @@ impl Job {
         let empty = Value::Null;
         let r = resp.unwrap_or(&empty);
         let model = r["model"].as_str().unwrap_or(&self.model);
-        let row = codex::usage_row(
-            &self.key.cfg.id,
-            &acc.id,
+        let meta = UsageMeta {
+            key_id: &self.key.cfg.id,
+            account_id: &acc.id,
             model,
-            self.kind.endpoint(),
-            status,
-            &r["usage"],
-            self.started,
+            endpoint: self.kind.endpoint(),
+            started: self.started,
             ttfb,
-        );
+        };
+        let row = Usage::new(meta, status, &r["usage"], &self.app.settings().pricing);
         self.app.record(Some(&self.key), row);
     }
 }
@@ -467,7 +458,7 @@ async fn handle(app: Arc<App>, kind: ApiFormat, h: HeaderMap, body: Bytes) -> Re
         return ApiError::new(kind, 401, "invalid or missing api key").into_response();
     };
     if let Err(e) = key.check(started) {
-        return ApiError::new(kind, 429, &e).into_response();
+        return ApiError::new(kind, 429, e.to_string()).into_response();
     }
     let req: Value = match serde_json::from_slice(&body) {
         Ok(v) => v,
@@ -475,54 +466,68 @@ async fn handle(app: Arc<App>, kind: ApiFormat, h: HeaderMap, body: Bytes) -> Re
     };
     let requested = req["model"].as_str().unwrap_or_default().to_string();
     let stream = req["stream"].as_bool().unwrap_or(false);
-    let (mut up, tx) = match kind {
-        ApiFormat::Responses => (req.clone(), Tx::Pass),
+    let (mut up, chat_opts, anth_opts) = match kind {
+        ApiFormat::Responses => (req.clone(), None, None),
         ApiFormat::Chat | ApiFormat::OpenRouter => match chat::to_responses(&req, kind == ApiFormat::OpenRouter) {
-            Ok((up, opts)) => (up, Tx::Chat(chat::Stream::new(opts))),
+            Ok((up, opts)) => (up, Some(opts), None),
             Err(e) => return ApiError::new(kind, 400, &e).into_response(),
         },
-        ApiFormat::Anthropic => match anthropic::to_responses(&req, App::canonical_model(&requested)) {
-            Ok((up, opts)) => (up, Tx::Anth(anthropic::Stream::new(opts))),
+        ApiFormat::Anthropic => match anthropic::to_responses(&req, canonical_model(&requested)) {
+            Ok((up, opts)) => (up, None, Some(opts)),
             Err(e) => return ApiError::new(kind, 400, &e).into_response(),
         },
     };
-    let model = App::canonical_model(up["model"].as_str().unwrap_or(&requested)).to_string();
+    let model = canonical_model(up["model"].as_str().unwrap_or(&requested)).to_string();
     if !key.allows_model(&requested) && !key.allows_model(&model) {
         return ApiError::new(kind, 403, &format!("model {requested} not allowed for this key")).into_response();
     }
+    let rates = app.settings().pricing.rates(&model);
+    let tx = match (chat_opts, anth_opts) {
+        (Some(mut opts), _) => {
+            opts.rates = rates;
+            Tx::Chat(chat::Stream::new(opts))
+        }
+        (None, Some(opts)) => Tx::Anth(anthropic::Stream::new(opts)),
+        (None, None) => Tx::Pass,
+    };
     up["model"] = Value::String(model.clone());
-    let provider = App::provider_for(&model);
-    if !app.accounts.read().iter().any(|a| a.cfg.read().kind == provider) {
+    let provider = Provider::for_model(&model);
+    if !app.accounts.any(provider) {
         return ApiError::new(kind, 503, &format!("no {provider} accounts connected to serve model {model}")).into_response();
     }
-    if provider == "codex" {
+    if provider == Provider::Codex {
         codex::prepare_body(&mut up);
     } else {
         up["stream"] = Value::Bool(true);
         up["usage"] = json!({"include": true});
     }
     let cache = session_key(&h, &req, &up);
-    if provider == "codex" && up.get("prompt_cache_key").is_none() {
+    if provider == Provider::Codex && up.get("prompt_cache_key").is_none() {
         up["prompt_cache_key"] = Value::String(cache.clone());
     }
-    let session = format!("{}\u{1f}{provider}\u{1f}{cache}", key.cfg.id);
-    if provider == "codex"
+    let session = Sessions::key(&key.cfg.id, provider, &cache);
+    if provider == Provider::Codex
         && let Some(acc) = file_owner(&app, &up)
     {
-        app.sticky.lock().insert(session.clone(), (acc, now_ms()));
+        app.sessions.bind(session.clone(), acc, now_ms());
     }
     let upstream = match send(&app, &key, provider, (kind == ApiFormat::Responses).then_some(&h), &up, &session).await {
         Ok(u) => u,
-        Err((503, _)) if let Some(until) = app.next_available(provider, &key.cfg.accounts) => {
-            tracing::warn!(endpoint = kind.endpoint(), %model, until = %crate::time::ts_iso(until), "all accounts rate limited");
+        Err((503, _)) if let Some(until) = app.accounts.next_available(provider, &key.cfg.accounts) => {
+            tracing::warn!(endpoint = kind.endpoint().as_str(), %model, until = %crate::time::ts_iso(until), "all accounts rate limited");
             return ApiError::limited(kind, provider, until).into_response();
         }
         Err((status, msg)) => {
-            tracing::warn!(endpoint = kind.endpoint(), %model, status, error = %msg, "request failed");
-            app.record(
-                Some(&key),
-                codex::usage_row(&key.cfg.id, "", &model, kind.endpoint(), status, &Value::Null, started, now_ms()),
-            );
+            tracing::warn!(endpoint = kind.endpoint().as_str(), %model, status, error = %msg, "request failed");
+            let meta = UsageMeta {
+                key_id: &key.cfg.id,
+                account_id: "",
+                model: &model,
+                endpoint: kind.endpoint(),
+                started,
+                ttfb: now_ms(),
+            };
+            app.record(Some(&key), Usage::new(meta, status, &Value::Null, &app.settings().pricing));
             return ApiError::new(kind, status, &msg).into_response();
         }
     };
@@ -538,7 +543,8 @@ async fn handle(app: Arc<App>, kind: ApiFormat, h: HeaderMap, body: Bytes) -> Re
         ApiFormat::Responses => run(job, upstream, tx, stream, |r| r.clone()).await,
         ApiFormat::Chat | ApiFormat::OpenRouter => {
             let or = kind == ApiFormat::OpenRouter;
-            let opts = chat::to_responses(&req, or).map(|(_, o)| o).unwrap();
+            let mut opts = chat::to_responses(&req, or).map(|(_, o)| o).unwrap();
+            opts.rates = rates;
             run(job, upstream, tx, stream, move |r| chat::from_response(r, &opts)).await
         }
         ApiFormat::Anthropic => {
@@ -559,7 +565,7 @@ fn file_owner(app: &App, up: &Value) -> Option<String> {
         .filter_map(|item| item["content"].as_array())
         .flatten()
         .find_map(|part| part["file_id"].as_str())
-        .and_then(|id| crate::server::endpoints::file_account(app, id))
+        .and_then(|id| app.files.owner(id))
 }
 
 pub async fn responses(State(app): State<Arc<App>>, h: HeaderMap, body: Bytes) -> Response {
@@ -609,7 +615,13 @@ pub async fn models(State(app): State<Arc<App>>, h: HeaderMap) -> Response {
 }
 
 pub async fn openrouter_models(State(app): State<Arc<App>>) -> Response {
-    let per_tok = |m: &str, i: usize| crate::app::pricing::rates(m).map_or("0".to_string(), |r| format!("{}", r[i] / 1e6));
+    let settings = app.settings();
+    let per_tok = |m: &str, i: usize| {
+        settings
+            .pricing
+            .rates(m)
+            .map_or_else(|| "0".to_owned(), |r| format!("{}", <[f64; 3]>::from(r)[i] / 1e6))
+    };
     let data: Vec<Value> = app
         .model_list()
         .into_iter()
@@ -651,7 +663,7 @@ pub async fn codex_models(State(app): State<Arc<App>>, h: HeaderMap, RawQuery(q)
     let Some(key) = api_key(&app, &h) else {
         return ApiError::new(ApiFormat::Responses, 401, "invalid or missing api key").into_response();
     };
-    let Some(acc) = app.pick("codex", &key.cfg.accounts, &[], None) else {
+    let Some(acc) = app.pick(Provider::Codex, &key.cfg.accounts, &[], None) else {
         return ApiError::new(ApiFormat::Responses, 503, "no available accounts").into_response();
     };
     if let Err(e) = codex::ensure_fresh(&app, &acc, false).await {
@@ -721,36 +733,47 @@ event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{
         let base = format!("http://{}", l.local_addr().unwrap());
         tokio::spawn(async move { axum::serve(l, upstream).await.unwrap() });
         let dir = std::env::temp_dir().join(format!("nanolb-proxy-{}", crate::id::random_hex(4)));
-        let app = App::new(Store::open(&dir).unwrap(), "admin".into());
+        let app = App::new(Store::open(&dir).unwrap(), "admin".into()).unwrap();
         app.save_settings(Settings {
             upstream_base: base,
             ..settings
-        });
+        })
+        .unwrap();
         let far = crate::time::now_ms() + 86_400_000;
         for (id, priority) in [("a", 0), ("b", 1)] {
-            app.upsert_account(AccountCfg {
-                id: id.into(),
-                kind: "codex".into(),
-                enabled: true,
-                priority,
-                chatgpt_account_id: format!("acct-{id}"),
-                expires_at: far,
-                last_refresh: crate::time::now_ms(),
-                ..Default::default()
-            });
+            app.accounts
+                .upsert(
+                    &app.store,
+                    AccountCfg {
+                        id: id.into(),
+                        provider: crate::app::Provider::Codex,
+                        enabled: true,
+                        priority,
+                        chatgpt_account_id: format!("acct-{id}"),
+                        expires_at: far,
+                        last_refresh: crate::time::now_ms(),
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
         }
-        app.save_key(KeyCfg {
-            id: "k".into(),
-            name: "k".into(),
-            hash: crate::id::sha256_hex("nlb-test"),
-            prefix: "nlb-test".into(),
-            accounts: vec![],
-            models: vec![],
-            limits: vec![],
-            enabled: true,
-            expires_at: None,
-            created_at: 0,
-        });
+        app.keys
+            .save(
+                &app.store,
+                KeyCfg {
+                    id: "k".into(),
+                    name: "k".into(),
+                    hash: crate::id::sha256_hex("nlb-test"),
+                    prefix: "nlb-test".into(),
+                    accounts: vec![],
+                    models: vec![],
+                    limits: vec![],
+                    enabled: true,
+                    expires_at: None,
+                    created_at: 0,
+                },
+            )
+            .unwrap();
         let srv = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}/v1/responses", srv.local_addr().unwrap());
         tokio::spawn(async move { axum::serve(srv, crate::router(app)).await.unwrap() });

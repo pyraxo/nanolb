@@ -2,8 +2,8 @@ pub(crate) mod client;
 mod service;
 mod tui;
 
-use client::Client;
 use clap::{Args, Parser, Subcommand};
+use client::Client;
 use oauth2::{AuthUrl, ClientId, CsrfToken, PkceCodeChallenge, RedirectUrl, Scope, TokenUrl, basic::BasicClient};
 use serde_json::{Map, Value, json};
 use std::{collections::HashMap, path::PathBuf, process::ExitCode, sync::Arc, time::Duration};
@@ -500,11 +500,7 @@ async fn login_device(c: &Client, label: Option<String>) -> Result<Value, String
 }
 
 fn running_pid() -> Option<u32> {
-    let pid: u32 = std::fs::read_to_string(crate::home::pid_path())
-        .ok()?
-        .trim()
-        .parse()
-        .ok()?;
+    let pid: u32 = std::fs::read_to_string(crate::home::pid_path()).ok()?.trim().parse().ok()?;
     std::process::Command::new("kill")
         .args(["-0", &pid.to_string()])
         .stderr(std::process::Stdio::null())

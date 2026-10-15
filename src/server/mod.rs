@@ -54,8 +54,7 @@ pub(crate) async fn serve(host: String, port: u16) -> anyhow::Result<()> {
     let db = dir.join("nanolb.db");
     let store = crate::store::Store::open(&db)?;
     home::secure_permissions(&dir, &db);
-    let app = App::new(store, home::admin_token()?);
-    let _ = crate::APP.set(app.clone());
+    let app = App::new(store, home::admin_token()?)?;
     crate::upstream::codex::spawn_background(app.clone());
     let listener = tokio::net::TcpListener::bind((host.as_str(), port))
         .await
@@ -63,10 +62,12 @@ pub(crate) async fn serve(host: String, port: u16) -> anyhow::Result<()> {
     let pid_file = home::pid_path();
     std::fs::write(&pid_file, std::process::id().to_string())?;
     tracing::info!(
-        addr = %format!("http://{host}:{port}"), accounts = app.accounts.read().len(), keys = app.keys.read().len(),
+        addr = %format!("http://{host}:{port}"), accounts = app.accounts.len(), keys = app.keys.len(),
         home = %dir.display(), "nanolb listening"
     );
-    let res = axum::serve(listener, router(app.clone())).with_graceful_shutdown(shutdown_signal()).await;
+    let res = axum::serve(listener, router(app.clone()))
+        .with_graceful_shutdown(shutdown_signal())
+        .await;
     app.persist_runtime();
     tokio::time::sleep(Duration::from_millis(200)).await;
     let _ = std::fs::remove_file(&pid_file);

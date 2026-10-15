@@ -1,3 +1,4 @@
+use crate::app::pricing::Rates;
 use bytes::Bytes;
 use serde_json::{Map, Value, json};
 
@@ -6,6 +7,7 @@ pub struct Opts {
     pub include_usage: bool,
     pub include_reasoning: bool,
     pub model: String,
+    pub rates: Option<Rates>,
 }
 
 fn text_of(v: &Value) -> String {
@@ -197,6 +199,7 @@ pub fn to_responses(req: &Value, openrouter: bool) -> Result<(Value, Opts), Stri
         include_usage: req["stream_options"]["include_usage"] == true,
         include_reasoning,
         model: client_model.to_string(),
+        rates: None,
     };
     Ok((Value::Object(out), opts))
 }
@@ -221,7 +224,7 @@ fn finish_reason(resp: &Value, has_tool: bool) -> &'static str {
     }
 }
 
-fn usage_json(u: &Value, opts: &Opts, cost_model: &str) -> Value {
+fn usage_json(u: &Value, opts: &Opts) -> Value {
     let n = |v: &Value| v.as_u64().unwrap_or(0);
     let prompt = n(&u["input_tokens"]);
     let completion = n(&u["output_tokens"]);
@@ -234,7 +237,7 @@ fn usage_json(u: &Value, opts: &Opts, cost_model: &str) -> Value {
         "completion_tokens_details":{"reasoning_tokens":n(&u["output_tokens_details"]["reasoning_tokens"])},
     });
     if opts.openrouter {
-        v["cost"] = crate::app::pricing::cost(cost_model, u).into();
+        v["cost"] = opts.rates.map_or(0.0, |r| r.cost(u)).into();
         v["is_byok"] = false.into();
     }
     v
@@ -256,7 +259,6 @@ pub struct Stream {
     has_tool: bool,
     tools: Vec<ToolSlot>,
     usage: Option<Value>,
-    cost_model: String,
 }
 
 impl Stream {
@@ -270,7 +272,6 @@ impl Stream {
             has_tool: false,
             tools: Vec::new(),
             usage: None,
-            cost_model: opts.model.clone(),
             opts,
         }
     }
@@ -345,9 +346,6 @@ impl Stream {
         self.start(out);
         if resp["usage"].is_object() {
             self.usage = Some(resp["usage"].clone());
-        }
-        if let Some(m) = resp["model"].as_str() {
-            self.cost_model = m.to_string();
         }
         let reason = finish_reason(resp, self.has_tool);
         self.push(out, &self.build(json!({}), Some(reason)));
@@ -439,7 +437,7 @@ impl Stream {
         {
             let mut v = self.build(json!({}), None);
             v["choices"] = json!([]);
-            v["usage"] = usage_json(u, &self.opts, &self.cost_model);
+            v["usage"] = usage_json(u, &self.opts);
             self.push(out, &v);
         }
         out.push(crate::sse::frame(None, "[DONE]"));
@@ -511,8 +509,7 @@ pub fn from_response(resp: &Value, opts: &Opts) -> Value {
         v["provider"] = "OpenAI".into();
     }
     if resp["usage"].is_object() {
-        let m = resp["model"].as_str().unwrap_or(&opts.model);
-        v["usage"] = usage_json(&resp["usage"], opts, m);
+        v["usage"] = usage_json(&resp["usage"], opts);
     }
     v
 }
@@ -565,6 +562,7 @@ mod tests {
             include_usage: true,
             include_reasoning: false,
             model: "gpt-5".into(),
+            rates: None,
         });
         let mut out = Vec::new();
         let evs = [

@@ -1,761 +1,100 @@
+pub(crate) mod account;
+pub(crate) mod accounts;
+pub(crate) mod files;
+pub(crate) mod key;
+pub(crate) mod keys;
+pub(crate) mod logins;
+pub(crate) mod models;
+mod pick;
 pub(crate) mod pricing;
+pub(crate) mod sessions;
+pub(crate) mod settings;
 
-use crate::store::{Store, Usage};
+pub(crate) use account::{Account, AccountCfg, Inflight, Provider, RateLimit, Warmup};
+pub(crate) use accounts::{Accounts, LookupError};
+pub(crate) use files::FileOwners;
+pub(crate) use key::{Key, KeyCfg, KeyRejected, Limit, Window};
+pub(crate) use keys::Keys;
+pub(crate) use logins::{LoginState, Logins};
+pub(crate) use models::{ModelCatalog, canonical_model};
+pub(crate) use sessions::{Pin, Sessions};
+pub(crate) use settings::{Settings, Strategy};
+
+use crate::store::{Store, StoreError, Usage};
 use crate::time::now_ms;
-use parking_lot::{Mutex, RwLock};
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
-use std::collections::HashMap;
+use arc_swap::ArcSwap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicI64, AtomicU32, AtomicUsize, Ordering::Relaxed};
-
-#[derive(Clone, Debug, Serialize, Deserialize, Default)]
-pub struct AccountCfg {
-    pub id: String,
-    #[serde(default = "codex")]
-    pub kind: String,
-    pub email: String,
-    pub label: String,
-    pub plan: String,
-    pub chatgpt_account_id: String,
-    pub access_token: String,
-    pub refresh_token: String,
-    pub id_token: String,
-    pub expires_at: i64,
-    pub last_refresh: i64,
-    #[serde(default = "yes")]
-    pub enabled: bool,
-    #[serde(default)]
-    pub priority: i64,
-    #[serde(default)]
-    pub warmup: Option<Warmup>,
-    pub created_at: i64,
-}
-
-fn codex() -> String {
-    "codex".into()
-}
-fn yes() -> bool {
-    true
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Warmup {
-    pub cron: String,
-    #[serde(default)]
-    pub model: String,
-    #[serde(default = "warm_prompt")]
-    pub prompt: String,
-    #[serde(default)]
-    pub last_fired: i64,
-}
-
-fn warm_prompt() -> String {
-    "hi".into()
-}
-
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-pub struct RateLimit {
-    pub primary_used: f64,
-    pub primary_window_min: i64,
-    pub primary_reset_at: i64,
-    pub secondary_used: f64,
-    pub secondary_window_min: i64,
-    pub secondary_reset_at: i64,
-    pub updated_at: i64,
-}
-
-impl RateLimit {
-    fn weekly_reset(&self, now: i64) -> i64 {
-        let reset = if self.secondary_window_min >= self.primary_window_min {
-            self.secondary_reset_at
-        } else {
-            self.primary_reset_at
-        };
-        if reset > now { reset } else { i64::MAX }
-    }
-
-    fn used(&self, now: i64) -> f64 {
-        let p = if self.primary_reset_at > now { self.primary_used } else { 0.0 };
-        let s = if self.secondary_reset_at > now { self.secondary_used } else { 0.0 };
-        p.max(s)
-    }
-}
-
-#[derive(Clone, Copy, Default)]
-pub struct Health {
-    pub ttfb_ms: f64,
-    pub err: f64,
-    pub at: i64,
-}
-
-impl Health {
-    const ALPHA: f64 = 0.3;
-
-    pub fn error_rate(&self, now: i64) -> f64 {
-        self.err * 0.5f64.powf((now - self.at).max(0) as f64 / 300_000.0)
-    }
-
-    pub fn score(&self, now: i64) -> f64 {
-        (self.ttfb_ms + 1_000.0) * (1.0 + 4.0 * self.error_rate(now))
-    }
-}
-
-pub struct Account {
-    pub cfg: RwLock<AccountCfg>,
-    pub id: String,
-    pub rl: Mutex<RateLimit>,
-    pub cooldown_until: AtomicI64,
-    pub inflight: AtomicU32,
-    pub last_error: Mutex<Option<(i64, String)>>,
-    pub refresh_lock: tokio::sync::Mutex<()>,
-    pub health: Mutex<Health>,
-}
-
-impl Account {
-    pub fn new(cfg: AccountCfg) -> Arc<Self> {
-        Arc::new(Self {
-            id: cfg.id.clone(),
-            cfg: RwLock::new(cfg),
-            rl: Mutex::new(RateLimit::default()),
-            cooldown_until: AtomicI64::new(0),
-            inflight: AtomicU32::new(0),
-            last_error: Mutex::new(None),
-            refresh_lock: tokio::sync::Mutex::new(()),
-            health: Mutex::new(Health::default()),
-        })
-    }
-
-    pub fn observe(&self, ttfb_ms: Option<i64>) {
-        let now = now_ms();
-        let mut h = self.health.lock();
-        let err = h.error_rate(now) * (1.0 - Health::ALPHA);
-        match ttfb_ms {
-            Some(t) if h.ttfb_ms == 0.0 => h.ttfb_ms = t as f64,
-            Some(t) => h.ttfb_ms = Health::ALPHA * t as f64 + (1.0 - Health::ALPHA) * h.ttfb_ms,
-            None => {}
-        }
-        h.err = if ttfb_ms.is_some() { err } else { err + Health::ALPHA };
-        h.at = now;
-    }
-
-    pub fn available(&self, now: i64) -> bool {
-        self.cfg.read().enabled && self.cooldown_until.load(Relaxed) <= now && self.rl.lock().used(now) < 100.0
-    }
-
-    pub fn fail(&self, until: i64, msg: String) {
-        tracing::warn!(account = %self.id, until = %crate::time::ts_iso(until), error = %msg, "account cooling down");
-        self.cooldown_until.store(until, Relaxed);
-        *self.last_error.lock() = Some((now_ms(), msg));
-    }
-
-    pub fn view(&self) -> Value {
-        let c = self.cfg.read();
-        let now = now_ms();
-        let cd = self.cooldown_until.load(Relaxed);
-        let hl = *self.health.lock();
-        serde_json::json!({
-            "id": c.id, "kind": c.kind, "email": c.email, "label": c.label, "plan": c.plan,
-            "enabled": c.enabled, "priority": c.priority, "available": self.available(now),
-            "cooldown_until": (cd > now).then(|| crate::time::ts_iso(cd)),
-            "inflight": self.inflight.load(Relaxed),
-            "token_expires_at": crate::time::ts_iso(c.expires_at), "last_refresh": crate::time::ts_iso(c.last_refresh),
-            "rate_limit": rl_view(&self.rl.lock()),
-            "latency": {
-                "ttfb_ewma_ms": hl.ttfb_ms.round(),
-                "error_rate": (hl.error_rate(now) * 1000.0).round() / 1000.0,
-            },
-            "last_error": self.last_error.lock().as_ref().map(|(t, m)| serde_json::json!({"at": crate::time::ts_iso(*t), "message": m})),
-            "warmup": c.warmup, "created_at": crate::time::ts_iso(c.created_at),
-        })
-    }
-}
-
-fn plan_weights(plan: &str) -> [f64; 2] {
-    match plan {
-        "free" => [0.0, 0.15],
-        "pro" | "enterprise" => [6.67, 6.67],
-        "prolite" => [5.0, 5.0],
-        _ => [1.0, 1.0],
-    }
-}
-
-fn rl_view(r: &RateLimit) -> Value {
-    let iso = |t: i64| (t > 0).then(|| crate::time::ts_iso(t));
-    serde_json::json!({
-        "primary": {"used_percent": r.primary_used, "window_minutes": r.primary_window_min, "resets_at": iso(r.primary_reset_at)},
-        "secondary": {"used_percent": r.secondary_used, "window_minutes": r.secondary_window_min, "resets_at": iso(r.secondary_reset_at)},
-        "updated_at": iso(r.updated_at),
-    })
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Limit {
-    pub window: Window,
-    #[serde(default)]
-    pub max_tokens: Option<u64>,
-    #[serde(default)]
-    pub max_cost_usd: Option<f64>,
-    #[serde(default)]
-    pub max_requests: Option<u64>,
-}
-
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
-#[serde(rename_all = "lowercase")]
-pub enum Window {
-    Day,
-    Week,
-    Month,
-    Total,
-}
-
-impl Window {
-    pub fn start(self, now_ms: i64) -> i64 {
-        use chrono::{Datelike, Local, TimeZone};
-        let now = Local.timestamp_millis_opt(now_ms).unwrap();
-        let d = now.date_naive();
-        let day = match self {
-            Window::Day => d,
-            Window::Week => d - chrono::Days::new(d.weekday().num_days_from_monday() as u64),
-            Window::Month => d.with_day(1).unwrap(),
-            Window::Total => return 0,
-        };
-        Local
-            .from_local_datetime(&day.and_hms_opt(0, 0, 0).unwrap())
-            .earliest()
-            .map_or(0, |t| t.timestamp_millis())
-    }
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct KeyCfg {
-    pub id: String,
-    pub name: String,
-    pub hash: String,
-    pub prefix: String,
-    #[serde(default)]
-    pub accounts: Vec<String>,
-    #[serde(default)]
-    pub models: Vec<String>,
-    #[serde(default)]
-    pub limits: Vec<Limit>,
-    #[serde(default = "yes")]
-    pub enabled: bool,
-    #[serde(default)]
-    pub expires_at: Option<i64>,
-    pub created_at: i64,
-}
-
-#[derive(Default, Clone, Copy, Serialize)]
-pub struct Counter {
-    pub start: i64,
-    pub tokens: u64,
-    pub cost: f64,
-    pub requests: u64,
-}
-
-pub struct Key {
-    pub cfg: KeyCfg,
-    pub counters: Mutex<HashMap<Window, Counter>>,
-}
-
-impl Key {
-    pub fn check(&self, now: i64) -> Result<(), String> {
-        if !self.cfg.enabled {
-            return Err("api key disabled".into());
-        }
-        if self.cfg.expires_at.is_some_and(|e| e <= now) {
-            return Err("api key expired".into());
-        }
-        let mut cs = self.counters.lock();
-        for l in &self.cfg.limits {
-            let c = roll(&mut cs, l.window, now);
-            let hit = l.max_tokens.is_some_and(|m| c.tokens >= m)
-                || l.max_cost_usd.is_some_and(|m| c.cost >= m)
-                || l.max_requests.is_some_and(|m| c.requests >= m);
-            if hit {
-                return Err(format!("api key {:?} limit reached", l.window).to_lowercase());
-            }
-        }
-        Ok(())
-    }
-
-    pub fn add(&self, now: i64, tokens: u64, cost: f64) {
-        let mut cs = self.counters.lock();
-        for w in [Window::Day, Window::Week, Window::Month, Window::Total] {
-            let c = roll(&mut cs, w, now);
-            c.tokens += tokens;
-            c.cost += cost;
-            c.requests += 1;
-        }
-    }
-
-    pub fn allows_model(&self, model: &str) -> bool {
-        self.cfg.models.is_empty() || self.cfg.models.iter().any(|m| m == model)
-    }
-
-    pub fn view(&self) -> Value {
-        let c = &self.cfg;
-        let now = now_ms();
-        let usage: HashMap<_, _> = {
-            let mut cs = self.counters.lock();
-            [Window::Day, Window::Week, Window::Month, Window::Total]
-                .into_iter()
-                .map(|w| (format!("{w:?}").to_lowercase(), *roll(&mut cs, w, now)))
-                .collect()
-        };
-        serde_json::json!({
-            "id": c.id, "name": c.name, "prefix": c.prefix, "accounts": c.accounts, "models": c.models,
-            "limits": c.limits, "enabled": c.enabled, "expires_at": c.expires_at.map(crate::time::ts_iso),
-            "created_at": crate::time::ts_iso(c.created_at), "usage": usage,
-        })
-    }
-}
-
-fn roll(cs: &mut HashMap<Window, Counter>, w: Window, now: i64) -> &mut Counter {
-    let start = w.start(now);
-    let c = cs.entry(w).or_default();
-    if c.start != start {
-        *c = Counter {
-            start,
-            ..Default::default()
-        };
-    }
-    c
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(default)]
-pub struct Settings {
-    pub strategy: Strategy,
-    pub sticky: bool,
-    pub max_attempts: u32,
-    pub models: Vec<String>,
-    pub pricing: HashMap<String, [f64; 3]>,
-    pub upstream_base: String,
-    pub codex_version: String,
-    pub usage_poll_secs: u64,
-    pub warmup_model: String,
-    pub openrouter_base: String,
-    pub openrouter_models: Vec<String>,
-    pub first_event_timeout_secs: u64,
-    pub idle_timeout_secs: u64,
-    pub keepalive_secs: u64,
-    pub compress_upstream: bool,
-    pub realtime_base: String,
-    pub prewarm: bool,
-}
-
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum Strategy {
-    Preserve,
-    Burn,
-    RoundRobin,
-    Priority,
-    Latency,
-}
-
-impl Default for Settings {
-    fn default() -> Self {
-        Self {
-            strategy: Strategy::Preserve,
-            sticky: true,
-            max_attempts: 4,
-            models: crate::app::pricing::DEFAULT_MODELS.iter().map(|s| s.to_string()).collect(),
-            pricing: crate::app::pricing::defaults(),
-            upstream_base: "https://chatgpt.com/backend-api".into(),
-            codex_version: "0.160.0".into(),
-            usage_poll_secs: 60,
-            warmup_model: "gpt-6-luna".into(),
-            first_event_timeout_secs: 90,
-            idle_timeout_secs: 600,
-            openrouter_base: "https://openrouter.ai/api/v1".into(),
-            openrouter_models: ["z-ai/glm-5.3-flash", "deepseek/deepseek-v4.1-flash"]
-                .into_iter()
-                .map(String::from)
-                .collect(),
-            keepalive_secs: 15,
-            compress_upstream: true,
-            realtime_base: "https://api.openai.com/v1".into(),
-            prewarm: false,
-        }
-    }
-}
+use std::time::Duration;
 
 pub struct App {
-    pub store: Store,
-    pub accounts: RwLock<Vec<Arc<Account>>>,
-    pub keys: RwLock<HashMap<String, Arc<Key>>>,
-    pub settings: RwLock<Arc<Settings>>,
-    pub sticky: Mutex<HashMap<String, (String, i64)>>,
-    pub rr: AtomicUsize,
-    pub logins: Mutex<HashMap<String, Value>>,
-    pub live_models: RwLock<Vec<(String, u64)>>,
-    pub http: reqwest::Client,
-    pub admin_token: String,
-    pub started_at: i64,
+    pub(crate) store: Store,
+    settings: ArcSwap<Settings>,
+    pub(crate) accounts: Accounts,
+    pub(crate) keys: Keys,
+    pub(crate) sessions: Sessions,
+    pub(crate) files: FileOwners,
+    pub(crate) logins: Logins,
+    pub(crate) models: ModelCatalog,
+    pub(crate) http: reqwest::Client,
+    pub(crate) admin_token: String,
+    pub(crate) started_at: i64,
+}
+
+fn http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .tcp_nodelay(true)
+        .pool_idle_timeout(Duration::from_secs(300))
+        .pool_max_idle_per_host(64)
+        .http2_adaptive_window(true)
+        .connect_timeout(Duration::from_secs(10))
+        .tcp_keepalive(Duration::from_secs(30))
+        .build()
+        .unwrap_or_else(|e| {
+            tracing::error!(error = %e, "cannot build the tuned http client, using the default");
+            reqwest::Client::new()
+        })
 }
 
 impl App {
-    pub fn new(store: Store, admin_token: String) -> Arc<Self> {
-        let accounts: Vec<Arc<Account>> = store.load::<AccountCfg>("account").into_iter().map(Account::new).collect();
-        let states: HashMap<String, Value> = store.load_raw("account_state").into_iter().collect();
-        for a in &accounts {
-            if let Some(st) = states.get(&a.id) {
-                if let Ok(rl) = serde_json::from_value(st["rl"].clone()) {
-                    *a.rl.lock() = rl;
-                }
-                a.cooldown_until.store(st["cooldown_until"].as_i64().unwrap_or(0), Relaxed);
-                if let (Some(t), Some(m)) = (st["last_error_at"].as_i64(), st["last_error"].as_str()) {
-                    *a.last_error.lock() = Some((t, m.to_string()));
-                }
-            }
-        }
-        store.prune("sticky", "t", now_ms() - 7 * 86_400_000);
-        let sticky: HashMap<String, (String, i64)> = store
-            .load_raw("sticky")
-            .into_iter()
-            .filter_map(|(k, v)| Some((k, (v["a"].as_str()?.to_string(), v["t"].as_i64()?))))
-            .collect();
-        let settings = store.load::<Settings>("settings").pop().unwrap_or_default();
+    pub fn new(store: Store, admin_token: String) -> Result<Arc<Self>, StoreError> {
         let now = now_ms();
-        let totals: HashMap<Window, HashMap<String, (u64, f64, u64)>> = [Window::Day, Window::Week, Window::Month, Window::Total]
-            .into_iter()
-            .map(|w| {
-                (
-                    w,
-                    store
-                        .key_totals_since(w.start(now))
-                        .into_iter()
-                        .map(|(k, t, c, n)| (k, (t, c, n)))
-                        .collect(),
-                )
-            })
-            .collect();
-        let keys = store
-            .load::<KeyCfg>("key")
-            .into_iter()
-            .map(|cfg| {
-                let counters = totals
-                    .iter()
-                    .map(|(w, m)| {
-                        let (tokens, cost, requests) = m.get(&cfg.id).copied().unwrap_or_default();
-                        (
-                            *w,
-                            Counter {
-                                start: w.start(now),
-                                tokens,
-                                cost,
-                                requests,
-                            },
-                        )
-                    })
-                    .collect();
-                (
-                    cfg.hash.clone(),
-                    Arc::new(Key {
-                        cfg,
-                        counters: Mutex::new(counters),
-                    }),
-                )
-            })
-            .collect();
-        let http = reqwest::Client::builder()
-            .tcp_nodelay(true)
-            .pool_idle_timeout(std::time::Duration::from_secs(300))
-            .pool_max_idle_per_host(64)
-            .http2_adaptive_window(true)
-            .connect_timeout(std::time::Duration::from_secs(10))
-            .tcp_keepalive(std::time::Duration::from_secs(30))
-            .build()
-            .unwrap();
-        Arc::new(Self {
+        let accounts = Accounts::load(&store)?;
+        let sessions = Sessions::load(&store)?;
+        let settings = store.load::<Settings>("settings")?.pop().unwrap_or_default();
+        let keys = Keys::load(&store, now)?;
+        let files = FileOwners::load(&store)?;
+        Ok(Arc::new(Self {
             store,
-            accounts: RwLock::new(accounts),
-            keys: RwLock::new(keys),
-            settings: RwLock::new(Arc::new(settings)),
-            sticky: Mutex::new(sticky),
-            rr: AtomicUsize::new(0),
-            logins: Mutex::new(HashMap::new()),
-            live_models: RwLock::new(vec![]),
-            http,
+            settings: ArcSwap::from_pointee(settings),
+            accounts,
+            keys,
+            sessions,
+            files,
+            logins: Logins::default(),
+            models: ModelCatalog::default(),
+            http: http_client(),
             admin_token,
             started_at: now,
-        })
+        }))
     }
 
-    pub fn model_list(&self) -> Vec<(String, u64)> {
-        let s = self.settings();
-        let live = self.live_models.read();
-        let mut out = if live.is_empty() {
-            s.models.iter().map(|m| (m.clone(), 272_000)).collect()
-        } else {
-            live.clone()
-        };
-        if self.accounts.read().iter().any(|a| a.cfg.read().kind == "openrouter") {
-            out.extend(s.openrouter_models.iter().map(|m| (m.clone(), 1_000_000)));
-        }
-        out
+    pub(crate) fn settings(&self) -> Arc<Settings> {
+        self.settings.load_full()
     }
 
-    pub fn canonical_model(model: &str) -> &str {
-        model.strip_prefix("openai/").unwrap_or(model)
+    pub(crate) fn save_settings(&self, s: Settings) -> Result<(), StoreError> {
+        self.store.put("settings", "settings", &s)?;
+        self.settings.store(Arc::new(s));
+        Ok(())
     }
 
-    pub fn provider_for(model: &str) -> &'static str {
-        if model.contains('/') { "openrouter" } else { "codex" }
+    pub(crate) fn persist_runtime(&self) {
+        self.accounts.persist_runtime(&self.store);
     }
 
-    pub fn settings(&self) -> Arc<Settings> {
-        self.settings.read().clone()
-    }
-
-    pub fn save_settings(&self, s: Settings) {
-        self.store.put("settings", "settings", &s);
-        *self.settings.write() = Arc::new(s);
-    }
-
-    pub fn account(&self, id: &str) -> Option<Arc<Account>> {
-        self.find_account(id).ok()
-    }
-
-    pub fn find_account(&self, query: &str) -> Result<Arc<Account>, String> {
-        let accs = self.accounts.read();
-        if let Some(a) = accs.iter().find(|a| a.id == query) {
-            return Ok(a.clone());
-        }
-        let hits: Vec<&Arc<Account>> = accs
-            .iter()
-            .filter(|a| {
-                let c = a.cfg.read();
-                c.email.eq_ignore_ascii_case(query) || c.label.eq_ignore_ascii_case(query)
-            })
-            .collect();
-        match hits.as_slice() {
-            [a] => Ok((*a).clone()),
-            [] => Err(format!("account {query} not found (use an id, email or label)")),
-            many => Err(format!(
-                "account {query} is ambiguous, use one of the ids: {}",
-                many.iter().map(|a| a.id.as_str()).collect::<Vec<_>>().join(", ")
-            )),
-        }
-    }
-
-    pub fn save_account(&self, a: &Account) {
-        if !self.accounts.read().iter().any(|x| std::ptr::eq(Arc::as_ptr(x), a)) {
-            return;
-        }
-        let cfg = a.cfg.read().clone();
-        self.store.put("account", &cfg.id, &cfg);
-    }
-
-    pub fn upsert_account(&self, cfg: AccountCfg) -> Arc<Account> {
-        self.store.put("account", &cfg.id, &cfg);
-        let mut accs = self.accounts.write();
-        if let Some(a) = accs.iter().find(|a| a.id == cfg.id) {
-            *a.cfg.write() = cfg;
-            return a.clone();
-        }
-        let a = Account::new(cfg);
-        accs.push(a.clone());
-        a
-    }
-
-    pub fn remove_account(&self, id: &str) -> bool {
-        self.store.delete("account", id);
-        let mut accs = self.accounts.write();
-        let n = accs.len();
-        accs.retain(|a| a.id != id);
-        n != accs.len()
-    }
-
-    pub fn key_by_secret(&self, secret: &str) -> Option<Arc<Key>> {
-        self.keys.read().get(&crate::id::sha256_hex(secret)).cloned()
-    }
-
-    pub fn save_key(&self, cfg: KeyCfg) -> Arc<Key> {
-        self.store.put("key", &cfg.id, &cfg);
-        let mut keys = self.keys.write();
-        let counters = keys.get(&cfg.hash).map(|k| k.counters.lock().clone()).unwrap_or_default();
-        let k = Arc::new(Key {
-            cfg,
-            counters: Mutex::new(counters),
-        });
-        keys.insert(k.cfg.hash.clone(), k.clone());
-        k
-    }
-
-    pub fn find_key(&self, id_or_name: &str) -> Option<Arc<Key>> {
-        self.keys
-            .read()
-            .values()
-            .find(|k| k.cfg.id == id_or_name || k.cfg.name == id_or_name)
-            .cloned()
-    }
-
-    pub fn remove_key(&self, id: &str) -> bool {
-        self.store.delete("key", id);
-        let mut keys = self.keys.write();
-        let n = keys.len();
-        keys.retain(|_, k| k.cfg.id != id);
-        n != keys.len()
-    }
-
-    pub fn pick(&self, kind: &str, allowed: &[String], exclude: &[String], session: Option<&str>) -> Option<Arc<Account>> {
-        let now = now_ms();
-        let s = self.settings();
-        let accs = self.accounts.read();
-        let ok = |a: &&Arc<Account>| {
-            a.cfg.read().kind == kind && (allowed.is_empty() || allowed.contains(&a.id)) && !exclude.contains(&a.id) && a.available(now)
-        };
-        if s.sticky
-            && let Some(sess) = session
-        {
-            let pinned = self.sticky.lock().get(sess).map(|(id, _)| id.clone());
-            if let Some(a) = pinned.and_then(|id| accs.iter().find(|a| a.id == id).filter(ok).cloned()) {
-                if let Some(e) = self.sticky.lock().get_mut(sess) {
-                    e.1 = now;
-                }
-                return Some(a);
-            }
-        }
-        let cands: Vec<&Arc<Account>> = accs.iter().filter(ok).collect();
-        let chosen = match s.strategy {
-            Strategy::RoundRobin => cands.get(self.rr.fetch_add(1, Relaxed) % cands.len().max(1)).copied(),
-            Strategy::Priority => cands
-                .iter()
-                .copied()
-                .min_by_key(|a| (a.cfg.read().priority, a.inflight.load(Relaxed))),
-            Strategy::Preserve => cands.iter().copied().min_by(|a, b| {
-                let (ua, ub) = (a.rl.lock().used(now), b.rl.lock().used(now));
-                ua.total_cmp(&ub).then(a.inflight.load(Relaxed).cmp(&b.inflight.load(Relaxed)))
-            }),
-            Strategy::Latency => cands
-                .iter()
-                .map(|a| (a.health.lock().score(now), a.inflight.load(Relaxed), *a))
-                .min_by(|x, y| x.0.total_cmp(&y.0).then(x.1.cmp(&y.1)))
-                .map(|x| x.2),
-            Strategy::Burn => cands.iter().copied().min_by_key(|a| {
-                let r = a.rl.lock();
-                (r.weekly_reset(now), -(r.used(now) as i64), a.cfg.read().priority)
-            }),
-        }?
-        .clone();
-        if s.sticky
-            && let Some(sess) = session
-        {
-            let mut st = self.sticky.lock();
-            if st.len() > 50_000 {
-                st.retain(|_, (_, t)| now - *t < 3_600_000);
-            }
-            st.insert(sess.to_string(), (chosen.id.clone(), now));
-            self.store.put_async("sticky", sess, &serde_json::json!({"a": chosen.id, "t": now}));
-        }
-        Some(chosen)
-    }
-
-    pub fn pool_rate_headers(&self, allowed: &[String]) -> Vec<(&'static str, String)> {
-        const NAMES: [[&str; 3]; 2] = [
-            [
-                "x-codex-primary-used-percent",
-                "x-codex-primary-window-minutes",
-                "x-codex-primary-reset-at",
-            ],
-            [
-                "x-codex-secondary-used-percent",
-                "x-codex-secondary-window-minutes",
-                "x-codex-secondary-reset-at",
-            ],
-        ];
-        let now = now_ms();
-        let mut agg = [(0.0f64, 0.0f64, i64::MAX, 0i64); 2];
-        for a in self.accounts.read().iter() {
-            let weights = {
-                let c = a.cfg.read();
-                if c.kind != "codex" || !c.enabled || !(allowed.is_empty() || allowed.contains(&a.id)) {
-                    continue;
-                }
-                plan_weights(&c.plan)
-            };
-            let r = a.rl.lock();
-            if r.updated_at == 0 {
-                continue;
-            }
-            let mut wins = [
-                (r.primary_used, r.primary_window_min, r.primary_reset_at),
-                (r.secondary_used, r.secondary_window_min, r.secondary_reset_at),
-            ];
-            if wins[1].1 <= 0 && wins[0].1 >= 10_080 {
-                wins = [(0.0, 0, 0), wins[0]];
-            }
-            for (i, (used, mins, reset)) in wins.into_iter().enumerate() {
-                if mins <= 0 {
-                    continue;
-                }
-                let g = &mut agg[i];
-                g.3 = g.3.max(mins);
-                g.0 += weights[i];
-                if reset > now {
-                    g.1 += weights[i] * used;
-                    g.2 = g.2.min(reset);
-                }
-            }
-        }
-        let mut out = vec![];
-        for (i, (cap, used, reset, mins)) in agg.into_iter().enumerate() {
-            if mins == 0 || cap <= 0.0 {
-                continue;
-            }
-            out.push((NAMES[i][0], format!("{}", (used / cap * 100.0).round() / 100.0)));
-            out.push((NAMES[i][1], mins.to_string()));
-            if reset != i64::MAX {
-                out.push((NAMES[i][2], (reset / 1000).to_string()));
-            }
-        }
-        out
-    }
-
-    pub fn next_available(&self, kind: &str, allowed: &[String]) -> Option<i64> {
-        let now = now_ms();
-        let mut earliest: Option<i64> = None;
-        for a in self.accounts.read().iter() {
-            let c = a.cfg.read();
-            if c.kind != kind || !c.enabled || !(allowed.is_empty() || allowed.contains(&a.id)) {
-                continue;
-            }
-            let r = a.rl.lock();
-            let mut t = a.cooldown_until.load(Relaxed);
-            for (used, reset) in [(r.primary_used, r.primary_reset_at), (r.secondary_used, r.secondary_reset_at)] {
-                if used >= 100.0 && reset > now {
-                    t = t.max(reset);
-                }
-            }
-            if t <= now {
-                return None;
-            }
-            earliest = Some(earliest.map_or(t, |e| e.min(t)));
-        }
-        earliest
-    }
-
-    pub fn persist_runtime(&self) {
-        for a in self.accounts.read().iter() {
-            let err = a.last_error.lock().clone();
-            self.store.put_async(
-                "account_state",
-                &a.id,
-                &serde_json::json!({
-                    "rl": *a.rl.lock(), "cooldown_until": a.cooldown_until.load(Relaxed),
-                    "last_error_at": err.as_ref().map(|e| e.0), "last_error": err.map(|e| e.1),
-                }),
-            );
-        }
-    }
-
-    pub fn record(&self, key: Option<&Key>, u: Usage) {
+    pub(crate) fn record(&self, key: Option<&Key>, u: Usage) {
         tracing::info!(
-            endpoint = u.endpoint, key = %u.key_id, account = %u.account_id, model = %u.model, status = u.status,
+            endpoint = u.endpoint.as_str(), key = %u.key_id, account = %u.account_id, model = %u.model, status = u.status,
             input = u.input, cached = u.cached, output = u.output, reasoning = u.reasoning, cost_usd = u.cost,
             latency_ms = u.latency_ms, ttfb_ms = u.ttfb_ms, "request"
         );
@@ -763,114 +102,5 @@ impl App {
             k.add(u.ts, u.input + u.output, u.cost);
         }
         self.store.record(u);
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn app_with(strategy: Strategy, accs: &[(&str, f64, i64)]) -> Arc<App> {
-        let dir = std::env::temp_dir().join(format!("nanolb-test-{}-{}", std::process::id(), crate::id::random_hex(4)));
-        let app = App::new(Store::open(&dir).unwrap(), String::new());
-        app.save_settings(Settings {
-            strategy,
-            ..Default::default()
-        });
-        let far = now_ms() + 86_400_000;
-        for (id, used, reset_in) in accs {
-            let a = app.upsert_account(AccountCfg {
-                id: id.to_string(),
-                kind: "codex".into(),
-                enabled: true,
-                ..Default::default()
-            });
-            *a.rl.lock() = RateLimit {
-                secondary_used: *used,
-                secondary_window_min: 10_080,
-                secondary_reset_at: far + reset_in,
-                ..Default::default()
-            };
-        }
-        app
-    }
-
-    #[test]
-    fn preserve_picks_least_used_and_skips_exhausted() {
-        let app = app_with(Strategy::Preserve, &[("a", 60.0, 0), ("b", 10.0, 0), ("c", 100.0, 0)]);
-        assert_eq!(app.pick("codex", &[], &[], None).unwrap().id, "b");
-        assert_eq!(app.pick("codex", &[], &["b".into()], None).unwrap().id, "a");
-        assert!(app.pick("codex", &[], &["a".into(), "b".into()], None).is_none());
-    }
-
-    #[test]
-    fn latency_prefers_faster_healthy_account() {
-        let app = app_with(Strategy::Latency, &[("a", 0.0, 0), ("b", 0.0, 0), ("c", 0.0, 0)]);
-        for _ in 0..3 {
-            app.account("a").unwrap().observe(Some(900));
-            app.account("b").unwrap().observe(Some(80));
-            app.account("c").unwrap().observe(Some(60));
-        }
-        app.account("c").unwrap().observe(None);
-        assert_eq!(app.pick("codex", &[], &[], None).unwrap().id, "b");
-    }
-
-    #[test]
-    fn burn_picks_soonest_weekly_reset() {
-        let app = app_with(Strategy::Burn, &[("a", 10.0, 5_000), ("b", 90.0, 9_000), ("c", 50.0, 1_000)]);
-        assert_eq!(app.pick("codex", &[], &[], None).unwrap().id, "c");
-    }
-
-    #[test]
-    fn next_available_is_earliest_reset_only_when_every_account_is_limited() {
-        let app = app_with(Strategy::Preserve, &[("a", 100.0, 5_000), ("b", 100.0, 1_000)]);
-        let b_reset = app.account("b").unwrap().rl.lock().secondary_reset_at;
-        assert_eq!(app.next_available("codex", &[]), Some(b_reset));
-        app.account("a").unwrap().rl.lock().secondary_used = 40.0;
-        assert_eq!(app.next_available("codex", &[]), None);
-    }
-
-    #[test]
-    fn accounts_resolve_by_id_email_or_label_and_reject_ambiguous_names() {
-        let app = app_with(Strategy::Preserve, &[("a", 0.0, 0), ("b", 0.0, 0)]);
-        for (id, email, label) in [("a", "me@x.io", "Work"), ("b", "me@x.io", "personal")] {
-            let acc = app.account(id).unwrap();
-            let mut c = acc.cfg.write();
-            c.email = email.into();
-            c.label = label.into();
-        }
-        assert_eq!(app.find_account("b").unwrap().id, "b");
-        assert_eq!(app.find_account("work").unwrap().id, "a");
-        assert!(app.find_account("me@x.io").err().is_some_and(|e| e.contains("ambiguous")));
-        assert!(app.find_account("nobody").is_err());
-    }
-
-    #[test]
-    fn key_blocks_after_daily_cost_limit() {
-        let k = Key {
-            cfg: KeyCfg {
-                id: "k".into(),
-                name: "k".into(),
-                hash: String::new(),
-                prefix: String::new(),
-                accounts: vec![],
-                models: vec![],
-                limits: vec![Limit {
-                    window: Window::Day,
-                    max_tokens: None,
-                    max_cost_usd: Some(1.0),
-                    max_requests: None,
-                }],
-                enabled: true,
-                expires_at: None,
-                created_at: 0,
-            },
-            counters: Mutex::new(HashMap::new()),
-        };
-        let now = now_ms();
-        k.add(now, 10, 0.6);
-        assert!(k.check(now).is_ok());
-        k.add(now, 10, 0.6);
-        assert!(k.check(now).is_err());
     }
 }

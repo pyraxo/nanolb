@@ -17,7 +17,7 @@ fn bearer(h: &HeaderMap) -> Option<&str> {
 
 pub(crate) fn api_key(app: &App, h: &HeaderMap) -> Option<Arc<Key>> {
     let secret = bearer(h).or_else(|| h.get("x-api-key").and_then(|v| v.to_str().ok()))?;
-    app.key_by_secret(secret.trim())
+    app.keys.by_secret(secret.trim())
 }
 
 pub(crate) fn is_admin(app: &App, h: &HeaderMap) -> bool {

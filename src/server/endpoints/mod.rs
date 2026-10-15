@@ -1,9 +1,9 @@
-use crate::server::http::Inflight;
+use crate::app::{Account, App, Inflight, Key, Provider, Window};
 use crate::server::auth::api_key;
 use crate::server::error::{ApiError, ApiFormat};
-use crate::app::{Account, App, Key, Window};
-use crate::upstream::codex;
+use crate::store::{Endpoint, Usage, UsageMeta};
 use crate::time::now_ms;
+use crate::upstream::codex;
 use axum::Router;
 use axum::body::{Body, Bytes};
 use axum::extract::{Multipart, Path, State};
@@ -13,20 +13,16 @@ use axum::routing::{get, post};
 use base64::Engine;
 use eventsource_stream::Eventsource;
 use futures_util::StreamExt;
-use parking_lot::Mutex;
 use reqwest::multipart::{Form, Part};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::Ordering::Relaxed;
 use std::time::Duration;
 
 const TRANSCRIBE_MODEL: &str = "gpt-4o-transcribe";
 const DEFAULT_IMAGE_MODEL: &str = "gpt-image-2";
 const IMAGE_INSTRUCTIONS: &str = "You are an image generator. When asked, you MUST call the image_generation tool exactly once and return only that tool call. Do not produce any additional text output. Mirror the user's request verbatim into the tool's prompt argument.";
 const MASK_HINT: &str = "\n\n(The final attached image is a transparent mask: only modify the regions where the mask is non-transparent.)";
-
-static FILES: Mutex<Option<HashMap<String, String>>> = Mutex::new(None);
 
 pub fn routes() -> Router<Arc<App>> {
     Router::new()
@@ -44,44 +40,28 @@ pub fn routes() -> Router<Arc<App>> {
         .route("/v1/embeddings", post(embeddings))
 }
 
-pub fn file_account(app: &App, id: &str) -> Option<String> {
-    FILES
-        .lock()
-        .get_or_insert_with(|| {
-            app.store
-                .load_raw("file")
-                .into_iter()
-                .filter_map(|(k, v)| Some((k, v["a"].as_str()?.to_string())))
-                .collect()
-        })
-        .get(id)
-        .cloned()
-}
-
-fn bind_file(app: &App, id: &str, account: &str) {
-    file_account(app, id);
-    if let Some(m) = FILES.lock().as_mut() {
-        m.insert(id.to_string(), account.to_string());
-    }
-    app.store.put_async("file", id, &json!({"a": account, "t": now_ms()}));
-}
-
 fn prelude(app: &App, h: &HeaderMap) -> Result<Arc<Key>, Box<Response>> {
     let key = api_key(app, h).ok_or_else(|| Box::new(ApiError::new(ApiFormat::Chat, 401, "invalid or missing api key").into_response()))?;
-    key.check(now_ms()).map_err(|e| Box::new(ApiError::new(ApiFormat::Chat, 429, &e).into_response()))?;
+    key.check(now_ms())
+        .map_err(|e| Box::new(ApiError::new(ApiFormat::Chat, 429, e.to_string()).into_response()))?;
     Ok(key)
 }
 
-#[allow(clippy::too_many_arguments)]
-fn record(app: &App, key: &Key, account: &str, model: &str, endpoint: &'static str, status: u16, usage: &Value, started: i64, ttfb: i64) {
-    app.record(
-        Some(key),
-        codex::usage_row(&key.cfg.id, account, model, endpoint, status, usage, started, ttfb),
-    );
+#[expect(clippy::too_many_arguments, reason = "interim until the endpoints owner splits this module")]
+fn record(app: &App, key: &Key, account: &str, model: &str, endpoint: Endpoint, status: u16, usage: &Value, started: i64, ttfb: i64) {
+    let meta = UsageMeta {
+        key_id: &key.cfg.id,
+        account_id: account,
+        model,
+        endpoint,
+        started,
+        ttfb,
+    };
+    app.record(Some(key), Usage::new(meta, status, usage, &app.settings().pricing));
 }
 
 struct Call<'a> {
-    provider: &'static str,
+    provider: Provider,
     method: reqwest::Method,
     path: &'a str,
     accept: &'static str,
@@ -109,7 +89,8 @@ async fn forward(app: &Arc<App>, key: &Key, c: &Call<'_>, shape: Shape<'_>) -> R
                     break;
                 }
                 let acc = app
-                    .account(id)
+                    .accounts
+                    .get(id)
                     .filter(|a| key.cfg.accounts.is_empty() || key.cfg.accounts.contains(&a.id));
                 if acc.is_none() {
                     last = (404, "the account that owns this file is not available".into());
@@ -124,9 +105,8 @@ async fn forward(app: &Arc<App>, key: &Key, c: &Call<'_>, shape: Shape<'_>) -> R
             last = (502, e);
             continue;
         }
-        acc.inflight.fetch_add(1, Relaxed);
-        let guard = Inflight(acc.clone());
-        let rb = if c.provider == "openrouter" {
+        let guard = acc.acquire();
+        let rb = if c.provider == Provider::OpenRouter {
             app.http
                 .request(c.method.clone(), format!("{}{}", app.settings().openrouter_base, c.path))
                 .bearer_auth(&acc.cfg.read().access_token)
@@ -155,7 +135,7 @@ async fn forward(app: &Arc<App>, key: &Key, c: &Call<'_>, shape: Shape<'_>) -> R
                 continue;
             }
         };
-        if c.provider == "codex" {
+        if c.provider == Provider::Codex {
             codex::apply_rate_headers(&acc, res.headers());
         }
         let status = res.status().as_u16();
@@ -196,20 +176,20 @@ async fn forward(app: &Arc<App>, key: &Key, c: &Call<'_>, shape: Shape<'_>) -> R
     Err(last)
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments, reason = "interim until the endpoints owner splits this module")]
 fn failed(
     app: &App,
     key: &Key,
-    provider: &str,
-    endpoint: &'static str,
+    provider: Provider,
+    endpoint: Endpoint,
     model: &str,
     started: i64,
     (status, msg): (u16, String),
 ) -> Response {
-    tracing::warn!(endpoint, status, error = %msg, "request failed");
+    tracing::warn!(endpoint = endpoint.as_str(), status, error = %msg, "request failed");
     record(app, key, "", model, endpoint, status, &Value::Null, started, now_ms());
     if status == 503
-        && let Some(until) = app.next_available(provider, &key.cfg.accounts)
+        && let Some(until) = app.accounts.next_available(provider, &key.cfg.accounts)
     {
         return ApiError::limited(ApiFormat::Chat, provider, until).into_response();
     }
@@ -263,7 +243,7 @@ fn pool(app: &App, key: &Key) -> (Value, Value, bool, String) {
         .iter()
         .filter(|a| {
             let c = a.cfg.read();
-            c.kind == "codex" && c.enabled && (key.cfg.accounts.is_empty() || key.cfg.accounts.contains(&a.id))
+            c.provider == Provider::Codex && c.enabled && (key.cfg.accounts.is_empty() || key.cfg.accounts.contains(&a.id))
         })
         .cloned()
         .collect();
@@ -340,7 +320,7 @@ async fn key_usage(State(app): State<Arc<App>>, h: HeaderMap) -> Response {
         Err(r) => return *r,
     };
     let total = key.view()["usage"]["total"].clone();
-    let cached = app.store.usage_summary(0, "key");
+    let cached = app.store.usage_summary(0, "key").unwrap_or_default();
     let cached = cached
         .as_array()
         .and_then(|rows| rows.iter().find(|r| r["group"] == key.cfg.id.as_str()))
@@ -363,7 +343,7 @@ async fn files_create(State(app): State<Arc<App>>, h: HeaderMap, body: Bytes) ->
         Err(r) => return *r,
     };
     let call = Call {
-        provider: "codex",
+        provider: Provider::Codex,
         method: reqwest::Method::POST,
         path: "/files",
         accept: "application/json",
@@ -375,7 +355,7 @@ async fn files_create(State(app): State<Arc<App>>, h: HeaderMap, body: Bytes) ->
     .await
     {
         Ok(s) => s,
-        Err(e) => return failed(&app, &key, "codex", "files", "files-create", started, e),
+        Err(e) => return failed(&app, &key, Provider::Codex, Endpoint::Files, "files-create", started, e),
     };
     let status = sent.res.status().as_u16();
     let bytes = sent.res.bytes().await.unwrap_or_default();
@@ -384,14 +364,14 @@ async fn files_create(State(app): State<Arc<App>>, h: HeaderMap, body: Bytes) ->
             .ok()
             .and_then(|v| v["file_id"].as_str().map(str::to_string))
     {
-        bind_file(&app, &id, &sent.acc.id);
+        app.files.bind(&app.store, &id, &sent.acc.id);
     }
     record(
         &app,
         &key,
         &sent.acc.id,
         "files-create",
-        "files",
+        Endpoint::Files,
         status,
         &Value::Null,
         started,
@@ -406,10 +386,10 @@ async fn files_finalize(State(app): State<Arc<App>>, h: HeaderMap, Path(id): Pat
         Ok(k) => k,
         Err(r) => return *r,
     };
-    let owner = file_account(&app, &id);
+    let owner = app.files.owner(&id);
     let path = format!("/files/{id}/uploaded");
     let call = Call {
-        provider: "codex",
+        provider: Provider::Codex,
         method: reqwest::Method::POST,
         path: &path,
         accept: "application/json",
@@ -423,7 +403,7 @@ async fn files_finalize(State(app): State<Arc<App>>, h: HeaderMap, Path(id): Pat
         .await
         {
             Ok(s) => s,
-            Err(e) => return failed(&app, &key, "codex", "files", "files-finalize", started, e),
+            Err(e) => return failed(&app, &key, Provider::Codex, Endpoint::Files, "files-finalize", started, e),
         };
         let status = sent.res.status().as_u16();
         let bytes = sent.res.bytes().await.unwrap_or_default();
@@ -434,7 +414,7 @@ async fn files_finalize(State(app): State<Arc<App>>, h: HeaderMap, Path(id): Pat
                 &key,
                 &sent.acc.id,
                 "files-finalize",
-                "files",
+                Endpoint::Files,
                 status,
                 &Value::Null,
                 started,
@@ -518,7 +498,7 @@ async fn transcribe(app: Arc<App>, h: HeaderMap, mp: Multipart, v1: bool) -> Res
     let prompt = form.text.get("prompt");
     let content_type = file.content_type.clone().unwrap_or_else(|| "application/octet-stream".into());
     let call = Call {
-        provider: "codex",
+        provider: Provider::Codex,
         method: reqwest::Method::POST,
         path: "/transcribe",
         accept: "application/json",
@@ -533,14 +513,14 @@ async fn transcribe(app: Arc<App>, h: HeaderMap, mp: Multipart, v1: bool) -> Res
     };
     let sent = match forward(&app, &key, &call, &shape).await {
         Ok(s) => s,
-        Err(e) => return failed(&app, &key, "codex", "transcribe", TRANSCRIBE_MODEL, started, e),
+        Err(e) => return failed(&app, &key, Provider::Codex, Endpoint::Transcribe, TRANSCRIBE_MODEL, started, e),
     };
     record(
         &app,
         &key,
         &sent.acc.id,
         TRANSCRIBE_MODEL,
-        "transcribe",
+        Endpoint::Transcribe,
         sent.res.status().as_u16(),
         &Value::Null,
         started,
@@ -621,7 +601,7 @@ async fn images(app: Arc<App>, key: Arc<Key>, opts: Value, images: Vec<String>, 
     codex::prepare_body(&mut up);
     let body = Bytes::from(serde_json::to_vec(&up).unwrap());
     let call = Call {
-        provider: "codex",
+        provider: Provider::Codex,
         method: reqwest::Method::POST,
         path: "/codex/responses",
         accept: "text/event-stream",
@@ -633,14 +613,14 @@ async fn images(app: Arc<App>, key: Arc<Key>, opts: Value, images: Vec<String>, 
     .await
     {
         Ok(s) => s,
-        Err(e) => return failed(&app, &key, "codex", "images", &model, started, e),
+        Err(e) => return failed(&app, &key, Provider::Codex, Endpoint::Images, &model, started, e),
     };
     let Sent { acc, res, guard, ttfb } = sent;
     if res.status().as_u16() >= 400 {
         let status = res.status().as_u16();
         let text = res.text().await.unwrap_or_default();
         drop(guard);
-        record(&app, &key, &acc.id, &model, "images", status, &Value::Null, started, ttfb);
+        record(&app, &key, &acc.id, &model, Endpoint::Images, status, &Value::Null, started, ttfb);
         return json_response(status, Bytes::from(text));
     }
     let idle = Duration::from_secs(app.settings().idle_timeout_secs.max(30));
@@ -669,7 +649,7 @@ async fn images(app: Arc<App>, key: Arc<Key>, opts: Value, images: Vec<String>, 
         Ok(_) => 200,
         Err(_) => 502,
     };
-    record(&app, &key, &acc.id, &model, "images", status, &usage, started, ttfb);
+    record(&app, &key, &acc.id, &model, Endpoint::Images, status, &usage, started, ttfb);
     match outcome {
         Ok(v) => axum::Json(v).into_response(),
         Err(msg) => ApiError::new(ApiFormat::Chat, 502, &msg).into_response(),
@@ -801,11 +781,11 @@ async fn embeddings(State(app): State<Arc<App>>, h: HeaderMap, body: Bytes) -> R
     if !key.allows_model(&model) {
         return ApiError::new(ApiFormat::Chat, 403, &format!("model {model} not allowed for this key")).into_response();
     }
-    if !app.accounts.read().iter().any(|a| a.cfg.read().kind == "openrouter") {
+    if !app.accounts.any(Provider::OpenRouter) {
         return ApiError::new(ApiFormat::Chat, 503, "no openrouter accounts connected to serve embeddings").into_response();
     }
     let call = Call {
-        provider: "openrouter",
+        provider: Provider::OpenRouter,
         method: reqwest::Method::POST,
         path: "/embeddings",
         accept: "application/json",
@@ -817,13 +797,23 @@ async fn embeddings(State(app): State<Arc<App>>, h: HeaderMap, body: Bytes) -> R
     .await
     {
         Ok(s) => s,
-        Err(e) => return failed(&app, &key, "openrouter", "embeddings", &model, started, e),
+        Err(e) => return failed(&app, &key, Provider::OpenRouter, Endpoint::Embeddings, &model, started, e),
     };
     let status = sent.res.status().as_u16();
     let bytes = sent.res.bytes().await.unwrap_or_default();
     let v: Value = serde_json::from_slice(&bytes).unwrap_or_default();
     let usage = json!({"input_tokens": v["usage"]["prompt_tokens"], "cost": v["usage"]["cost"]});
-    record(&app, &key, &sent.acc.id, &model, "embeddings", status, &usage, started, sent.ttfb);
+    record(
+        &app,
+        &key,
+        &sent.acc.id,
+        &model,
+        Endpoint::Embeddings,
+        status,
+        &usage,
+        started,
+        sent.ttfb,
+    );
     json_response(status, bytes)
 }
 
@@ -847,41 +837,52 @@ mod tests {
 
     fn setup(base: String, accounts: &[(&str, i64, bool)]) -> Arc<App> {
         let dir = std::env::temp_dir().join(format!("nanolb-endpoints-{}", crate::id::random_hex(4)));
-        let app = App::new(Store::open(&dir).unwrap(), "admin".into());
+        let app = App::new(Store::open(&dir).unwrap(), "admin".into()).unwrap();
         app.save_settings(Settings {
             upstream_base: base,
             strategy: Strategy::Priority,
             ..Default::default()
-        });
+        })
+        .unwrap();
         for (id, priority, enabled) in accounts {
             upsert(&app, id, *priority, *enabled);
         }
-        app.save_key(KeyCfg {
-            id: "k".into(),
-            name: "k".into(),
-            hash: crate::id::sha256_hex("nlb-test"),
-            prefix: "nlb-test".into(),
-            accounts: vec![],
-            models: vec![],
-            limits: vec![],
-            enabled: true,
-            expires_at: None,
-            created_at: 0,
-        });
+        app.keys
+            .save(
+                &app.store,
+                KeyCfg {
+                    id: "k".into(),
+                    name: "k".into(),
+                    hash: crate::id::sha256_hex("nlb-test"),
+                    prefix: "nlb-test".into(),
+                    accounts: vec![],
+                    models: vec![],
+                    limits: vec![],
+                    enabled: true,
+                    expires_at: None,
+                    created_at: 0,
+                },
+            )
+            .unwrap();
         app
     }
 
     fn upsert(app: &App, id: &str, priority: i64, enabled: bool) {
-        app.upsert_account(AccountCfg {
-            id: id.into(),
-            kind: "codex".into(),
-            enabled,
-            priority,
-            chatgpt_account_id: format!("acct-{id}"),
-            expires_at: crate::time::now_ms() + 86_400_000,
-            last_refresh: crate::time::now_ms(),
-            ..Default::default()
-        });
+        app.accounts
+            .upsert(
+                &app.store,
+                AccountCfg {
+                    id: id.into(),
+                    provider: crate::app::Provider::Codex,
+                    enabled,
+                    priority,
+                    chatgpt_account_id: format!("acct-{id}"),
+                    expires_at: crate::time::now_ms() + 86_400_000,
+                    last_refresh: crate::time::now_ms(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
     }
 
     #[tokio::test]
@@ -955,6 +956,6 @@ mod tests {
             .unwrap();
         assert_eq!(res.status(), 200);
         assert_eq!(res.json::<Value>().await.unwrap()["file_id"], "file_failover");
-        assert_eq!(super::file_account(&app, "file_failover").as_deref(), Some("b"));
+        assert_eq!(app.files.owner("file_failover").as_deref(), Some("b"));
     }
 }

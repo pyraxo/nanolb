@@ -1,7 +1,7 @@
+use crate::app::{App, Provider, Warmup};
 use crate::control::admin::{account_or_err, parse_since, s};
-use crate::upstream::codex;
-use crate::app::{App, Warmup};
 use crate::time::{now_ms, ts_iso};
+use crate::upstream::codex;
 use serde_json::{Value, json};
 use std::sync::Arc;
 
@@ -9,15 +9,15 @@ pub fn sessions_list(app: &App, a: &Value) -> Value {
     let key = a["key"].as_str();
     let resolved = a["account"]
         .as_str()
-        .map(|q| app.find_account(q).map_or_else(|_| q.to_string(), |acc| acc.id.clone()));
+        .map(|q| app.accounts.resolve(q).map_or_else(|_| q.to_string(), |acc| acc.id.clone()));
     let account = resolved.as_deref();
     let limit = a["limit"].as_u64().unwrap_or(100) as usize;
     let mut rows: Vec<(String, String, i64)> = app
-        .sticky
-        .lock()
-        .iter()
-        .filter(|(k, (acc, _))| key.is_none_or(|q| k.contains(q)) && account.is_none_or(|q| acc == q))
-        .map(|(k, (acc, t))| (k.clone(), acc.clone(), *t))
+        .sessions
+        .list()
+        .into_iter()
+        .filter(|(k, p)| key.is_none_or(|q| k.contains(q)) && account.is_none_or(|q| p.account == q))
+        .map(|(k, p)| (k, p.account, p.at))
         .collect();
     rows.sort_by_key(|r| std::cmp::Reverse(r.2));
     json!(
@@ -30,15 +30,14 @@ pub fn sessions_list(app: &App, a: &Value) -> Value {
 
 pub fn session_delete(app: &App, a: &Value) -> Result<Value, String> {
     let key = s(a, "key")?;
-    let removed = app.sticky.lock().remove(key).is_some();
-    app.store.delete_async("sticky", key);
+    let removed = app.sessions.remove(&app.store, key);
     Ok(json!({"removed": removed}))
 }
 
 pub fn sessions_purge(app: &App, a: &Value) -> Result<Value, String> {
     let all = a["all"].as_bool().unwrap_or(false);
     let resolved = match a["account"].as_str() {
-        Some(q) => Some(app.find_account(q)?.id.clone()),
+        Some(q) => Some(app.accounts.resolve(q).map_err(|e| e.to_string())?.id.clone()),
         None => None,
     };
     let account = resolved.as_deref();
@@ -49,23 +48,15 @@ pub fn sessions_purge(app: &App, a: &Value) -> Result<Value, String> {
     if !all && account.is_none() && cutoff.is_none() {
         return Err("sessions_purge needs all, account or older_than".into());
     }
-    let mut removed = Vec::new();
-    app.sticky.lock().retain(|k, (acc, t)| {
-        let hit = all || account.is_some_and(|q| acc == q) || cutoff.is_some_and(|c| *t < c);
-        if hit {
-            removed.push(k.clone());
-        }
-        !hit
+    let removed = app.sessions.purge(&app.store, |p| {
+        all || account.is_some_and(|q| p.account == q) || cutoff.is_some_and(|c| p.at < c)
     });
-    for k in &removed {
-        app.store.delete_async("sticky", k);
-    }
-    Ok(json!({"removed": removed.len()}))
+    Ok(json!({"removed": removed}))
 }
 
 fn codex_account(app: &App, a: &Value) -> Result<Arc<crate::app::Account>, String> {
     let acc = account_or_err(app, a)?;
-    if acc.cfg.read().kind != "codex" {
+    if acc.provider() != Provider::Codex {
         return Err(format!("account {} is not a codex account", acc.id));
     }
     Ok(acc)
@@ -75,11 +66,6 @@ pub async fn reset_credits_list(app: &Arc<App>, a: &Value) -> Result<Value, Stri
     let acc = codex_account(app, a)?;
     codex::ensure_fresh(app, &acc, false).await?;
     codex::wham(app, &acc, reqwest::Method::GET, "rate-limit-reset-credits", None).await
-}
-
-fn uuid_v4() -> String {
-    let h = crate::id::random_hex(16);
-    format!("{}-{}-4{}-a{}-{}", &h[0..8], &h[8..12], &h[13..16], &h[17..20], &h[20..32])
 }
 
 pub async fn reset_credits_consume(app: &Arc<App>, a: &Value) -> Result<Value, String> {
@@ -99,7 +85,7 @@ pub async fn reset_credits_consume(app: &Arc<App>, a: &Value) -> Result<Value, S
                 .ok_or_else(|| format!("account {} has no available reset credit", acc.id))?
         }
     };
-    let body = json!({"credit_id": credit_id, "redeem_request_id": uuid_v4()});
+    let body = json!({"credit_id": credit_id, "redeem_request_id": crate::id::uuid_v4()});
     let mut res = codex::wham(app, &acc, reqwest::Method::POST, "rate-limit-reset-credits/consume", Some(body)).await?;
     let _ = codex::fetch_usage(app, &acc).await;
     res["account"] = acc.view();
@@ -167,7 +153,7 @@ pub fn plan(app: &App, a: &Value) -> Result<Value, String> {
         .accounts
         .read()
         .iter()
-        .filter(|x| x.cfg.read().kind == "codex")
+        .filter(|x| x.provider() == Provider::Codex)
         .cloned()
         .collect();
     accounts.sort_by_key(|x| (x.cfg.read().priority, x.id.clone()));
@@ -218,7 +204,7 @@ pub fn plan(app: &App, a: &Value) -> Result<Value, String> {
                 last_fired: now,
             });
             drop(c);
-            app.save_account(acc);
+            app.accounts.save(&app.store, acc).map_err(|e| e.to_string())?;
             applied = true;
         }
         out.push(json!({
@@ -237,11 +223,14 @@ pub fn analytics(app: &App, a: &Value) -> Result<Value, String> {
     let bucket = a["bucket"].as_str().unwrap_or("day");
     let limit = a["limit"].as_i64().unwrap_or(10).clamp(1, 1000);
     if view != "all" {
-        return app.store.analytics(view, by, bucket, since, limit);
+        return app.store.analytics(view, by, bucket, since, limit).map_err(|e| e.to_string());
     }
     let mut o = serde_json::Map::new();
     for v in ["series", "latency", "errors", "cache", "top", "utilization"] {
-        o.insert(v.into(), app.store.analytics(v, by, bucket, since, limit)?);
+        o.insert(
+            v.into(),
+            app.store.analytics(v, by, bucket, since, limit).map_err(|e| e.to_string())?,
+        );
     }
     Ok(Value::Object(o))
 }
