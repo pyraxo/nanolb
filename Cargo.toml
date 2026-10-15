@@ -30,6 +30,7 @@ open = "5"
 ratatui = "0.30"
 rmcp = { version = "3.5.1", features = ["server", "transport-io", "transport-streamable-http-server"] }
 futures = "0.3"
+zstd = { version = "0.14", default-features = false }
 
 [profile.release]
 opt-level = 3

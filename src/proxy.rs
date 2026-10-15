@@ -171,7 +171,14 @@ async fn send(
     up: &Value,
     session: &str,
 ) -> Result<Upstream, (u16, String)> {
-    let body = Bytes::from(serde_json::to_vec(up).unwrap());
+    let raw = serde_json::to_vec(up).unwrap();
+    let (body, compressed) = match provider == "codex" && app.settings().compress_upstream {
+        true => match zstd::stream::encode_all(&raw[..], 3) {
+            Ok(c) => (Bytes::from(c), true),
+            Err(_) => (Bytes::from(raw), false),
+        },
+        false => (Bytes::from(raw), false),
+    };
     let cache_key = up["prompt_cache_key"].as_str().unwrap_or_default();
     let first_timeout = std::time::Duration::from_secs(app.settings().first_event_timeout_secs.max(5));
     let mut tried: Vec<String> = vec![];
@@ -199,9 +206,11 @@ async fn send(
         }
         acc.inflight.fetch_add(1, Relaxed);
         let guard = Inflight(acc.clone());
-        let req = upstream_request(app, &acc, provider, h, cache_key)
-            .header(header::CONTENT_TYPE, "application/json")
-            .body(body.clone());
+        let mut req = upstream_request(app, &acc, provider, h, cache_key).header(header::CONTENT_TYPE, "application/json");
+        if compressed {
+            req = req.header(header::CONTENT_ENCODING, "zstd");
+        }
+        let req = req.body(body.clone());
         let res = match tokio::time::timeout(first_timeout, req.send()).await {
             Ok(Ok(r)) => r,
             Ok(Err(e)) => {

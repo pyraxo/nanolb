@@ -300,6 +300,7 @@ pub struct Settings {
     pub first_event_timeout_secs: u64,
     pub idle_timeout_secs: u64,
     pub keepalive_secs: u64,
+    pub compress_upstream: bool,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -331,6 +332,7 @@ impl Default for Settings {
                 .map(String::from)
                 .collect(),
             keepalive_secs: 15,
+            compress_upstream: false,
         }
     }
 }
