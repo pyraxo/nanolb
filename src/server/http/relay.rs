@@ -225,23 +225,36 @@ impl Pump {
 
     async fn pump(&mut self, first: &Event, idle: Duration, keepalive: Duration) -> bool {
         self.on(first);
+        let mut last = Instant::now();
+        let tick = tokio::time::sleep_until(last + keepalive);
+        tokio::pin!(tick);
         loop {
             if !self.flush().await {
                 return false;
             }
-            let deadline = Instant::now() + idle;
             loop {
-                match timeout(keepalive, self.events.next()).await {
-                    Ok(Some(Ok(ev))) => {
+                tokio::select! {
+                    biased;
+                    ev = self.events.next() => {
+                        let Some(Ok(ev)) = ev else { return true };
                         self.on(&ev);
+                        last = Instant::now();
                         break;
                     }
-                    Err(_) if Instant::now() < deadline => {
+                    () = &mut tick => {
+                        let now = Instant::now();
+                        if now >= last + idle {
+                            return true;
+                        }
+                        if now < last + keepalive {
+                            tick.as_mut().reset(last + keepalive);
+                            continue;
+                        }
                         if self.sender.send(Bytes::from_static(KEEPALIVE)).await.is_err() {
                             return false;
                         }
+                        tick.as_mut().reset(now + keepalive);
                     }
-                    _ => return true,
                 }
             }
         }
