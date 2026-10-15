@@ -1,0 +1,8 @@
+$ nanolb login --help
+exit 0
+Usage: nanolb login [OPTIONS]
+
+Options:
+      --label <LABEL>  
+      --browser        
+  -h, --help           Print help

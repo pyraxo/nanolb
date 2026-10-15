@@ -1,0 +1,6 @@
+$ nanolb down --help
+exit 0
+Usage: nanolb down
+
+Options:
+  -h, --help  Print help

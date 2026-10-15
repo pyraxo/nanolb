@@ -1,0 +1,7 @@
+$ nanolb service uninstall --help
+exit 0
+Usage: nanolb service uninstall [OPTIONS]
+
+Options:
+      --purge  
+  -h, --help   Print help

@@ -1,0 +1,9 @@
+$ nanolb plan --help
+exit 0
+Usage: nanolb plan [OPTIONS]
+
+Options:
+      --work-start <WORK_START>  
+      --lookback <LOOKBACK>      
+      --apply                    
+  -h, --help                     Print help

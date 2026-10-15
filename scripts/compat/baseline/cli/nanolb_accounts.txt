@@ -1,0 +1,20 @@
+$ nanolb accounts --help
+exit 0
+Usage: nanolb accounts <COMMAND>
+
+Commands:
+  ls              
+  import          
+  add-openrouter  
+  rm              
+  enable          
+  disable         
+  priority        
+  refresh         
+  warmup          
+  set-warmup      
+  clear-warmup    
+  help            Print this message or the help of the given subcommand(s)
+
+Options:
+  -h, --help  Print help

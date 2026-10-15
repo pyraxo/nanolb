@@ -1,0 +1,13 @@
+$ nanolb keys create --help
+exit 0
+Usage: nanolb keys create [OPTIONS] <NAME>
+
+Arguments:
+  <NAME>  
+
+Options:
+      --account <ACCOUNTS>  
+      --model <MODELS>      
+      --limit <LIMITS>      
+      --expires <EXPIRES>   
+  -h, --help                Print help

@@ -1,0 +1,6 @@
+$ nanolb status --help
+exit 0
+Usage: nanolb status
+
+Options:
+  -h, --help  Print help

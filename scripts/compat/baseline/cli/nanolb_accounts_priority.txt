@@ -1,0 +1,10 @@
+$ nanolb accounts priority --help
+exit 0
+Usage: nanolb accounts priority <ID> <N>
+
+Arguments:
+  <ID>  
+  <N>   
+
+Options:
+  -h, --help  Print help

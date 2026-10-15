@@ -1,0 +1,12 @@
+$ nanolb accounts set-warmup --help
+exit 0
+Usage: nanolb accounts set-warmup [OPTIONS] <ID> <CRON>
+
+Arguments:
+  <ID>    
+  <CRON>  
+
+Options:
+      --model <MODEL>    
+      --prompt <PROMPT>  
+  -h, --help             Print help

@@ -1,0 +1,11 @@
+$ nanolb settings --help
+exit 0
+Usage: nanolb settings <COMMAND>
+
+Commands:
+  get   
+  set   
+  help  Print this message or the help of the given subcommand(s)
+
+Options:
+  -h, --help  Print help

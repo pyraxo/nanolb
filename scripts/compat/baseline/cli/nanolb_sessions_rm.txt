@@ -1,0 +1,9 @@
+$ nanolb sessions rm --help
+exit 0
+Usage: nanolb sessions rm <KEY>
+
+Arguments:
+  <KEY>  
+
+Options:
+  -h, --help  Print help

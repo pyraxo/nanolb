@@ -1,0 +1,6 @@
+$ nanolb models --help
+exit 0
+Usage: nanolb models
+
+Options:
+  -h, --help  Print help

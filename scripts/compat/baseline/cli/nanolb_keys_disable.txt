@@ -1,0 +1,9 @@
+$ nanolb keys disable --help
+exit 0
+Usage: nanolb keys disable <ID>
+
+Arguments:
+  <ID>  
+
+Options:
+  -h, --help  Print help

@@ -1,0 +1,157 @@
+{
+  "accounts rm nobody": {
+    "exit": 1,
+    "stderr": "error: account nobody not found (use an id, email or label)\n",
+    "stdout": ""
+  },
+  "call nope": {
+    "exit": 1,
+    "stderr": "error: unknown op `nope`\n",
+    "stdout": ""
+  },
+  "call status {bad": {
+    "exit": 1,
+    "stderr": "error: invalid JSON: key must be a string at line 1 column 2\n",
+    "stdout": ""
+  },
+  "keys create x --limit bad": {
+    "exit": 1,
+    "stderr": "error: invalid limit 'bad', expected WINDOW:KIND:VALUE\n",
+    "stdout": ""
+  },
+  "sessions purge": {
+    "exit": 1,
+    "stderr": "error: sessions_purge needs all, account or older_than\n",
+    "stdout": ""
+  },
+  "settings get": {
+    "exit": 0,
+    "stderr": "",
+    "stdout": {
+      "codex_version": "0.160.0",
+      "compress_upstream": true,
+      "first_event_timeout_secs": 90,
+      "idle_timeout_secs": 600,
+      "keepalive_secs": 15,
+      "max_attempts": 4,
+      "models": [
+        "gpt-6.1-sol",
+        "gpt-6-sol",
+        "gpt-6-astra",
+        "gpt-6-luna",
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
+        "gpt-5.6-luna"
+      ],
+      "openrouter_base": "https://openrouter.ai/api/v1",
+      "openrouter_models": [
+        "z-ai/glm-5.3-flash",
+        "deepseek/deepseek-v4.1-flash"
+      ],
+      "prewarm": false,
+      "pricing": {
+        "gpt-5": [
+          1.25,
+          0.125,
+          10.0
+        ],
+        "gpt-5-mini": [
+          0.25,
+          0.025,
+          2.0
+        ],
+        "gpt-5.1": [
+          1.25,
+          0.125,
+          10.0
+        ],
+        "gpt-5.1-codex-mini": [
+          0.25,
+          0.025,
+          2.0
+        ],
+        "gpt-5.2": [
+          1.75,
+          0.175,
+          14.0
+        ],
+        "gpt-5.3": [
+          1.75,
+          0.175,
+          14.0
+        ],
+        "gpt-5.4": [
+          2.5,
+          0.25,
+          15.0
+        ],
+        "gpt-5.4-mini": [
+          0.75,
+          0.075,
+          4.5
+        ],
+        "gpt-5.4-nano": [
+          0.2,
+          0.02,
+          1.25
+        ],
+        "gpt-5.4-pro": [
+          30.0,
+          30.0,
+          180.0
+        ],
+        "gpt-5.5": [
+          5.0,
+          0.5,
+          30.0
+        ],
+        "gpt-5.5-pro": [
+          30.0,
+          30.0,
+          180.0
+        ],
+        "gpt-5.6-luna": [
+          0.2,
+          0.02,
+          1.2
+        ],
+        "gpt-5.6-sol": [
+          4.0,
+          0.4,
+          20.0
+        ],
+        "gpt-5.6-terra": [
+          2.0,
+          0.2,
+          12.0
+        ],
+        "gpt-6-astra": [
+          10.0,
+          1.0,
+          50.0
+        ],
+        "gpt-6-luna": [
+          0.1,
+          0.01,
+          0.5
+        ],
+        "gpt-6-sol": [
+          2.0,
+          0.2,
+          10.0
+        ]
+      },
+      "realtime_base": "https://api.openai.com/v1",
+      "sticky": true,
+      "strategy": "preserve",
+      "upstream_base": "https://chatgpt.com/backend-api",
+      "usage_poll_secs": 60,
+      "warmup_model": "gpt-6-luna"
+    }
+  },
+  "status unreachable": {
+    "exit": 1,
+    "stderr": "error: cannot reach nanolb at http://127.0.0.1:9: error sending request for url (http://127.0.0.1:9/admin/status)\n",
+    "stdout": ""
+  }
+}

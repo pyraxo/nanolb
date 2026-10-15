@@ -1,0 +1,10 @@
+$ nanolb accounts add-openrouter --help
+exit 0
+Usage: nanolb accounts add-openrouter [OPTIONS] <API_KEY>
+
+Arguments:
+  <API_KEY>  
+
+Options:
+      --label <LABEL>  
+  -h, --help           Print help

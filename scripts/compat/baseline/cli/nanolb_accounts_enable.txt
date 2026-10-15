@@ -1,0 +1,9 @@
+$ nanolb accounts enable --help
+exit 0
+Usage: nanolb accounts enable <ID>
+
+Arguments:
+  <ID>  
+
+Options:
+  -h, --help  Print help

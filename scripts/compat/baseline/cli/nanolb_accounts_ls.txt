@@ -1,0 +1,6 @@
+$ nanolb accounts ls --help
+exit 0
+Usage: nanolb accounts ls
+
+Options:
+  -h, --help  Print help

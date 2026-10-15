@@ -1,0 +1,7 @@
+$ nanolb top --help
+exit 0
+Usage: nanolb top [OPTIONS]
+
+Options:
+      --interval <INTERVAL>  [default: 2]
+  -h, --help                 Print help

@@ -1,0 +1,6 @@
+$ nanolb mcp --help
+exit 0
+Usage: nanolb mcp
+
+Options:
+  -h, --help  Print help

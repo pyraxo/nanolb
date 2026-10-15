@@ -1,0 +1,9 @@
+$ nanolb sessions ls --help
+exit 0
+Usage: nanolb sessions ls [OPTIONS]
+
+Options:
+      --key <KEY>          
+      --account <ACCOUNT>  
+      --limit <LIMIT>      [default: 100]
+  -h, --help               Print help

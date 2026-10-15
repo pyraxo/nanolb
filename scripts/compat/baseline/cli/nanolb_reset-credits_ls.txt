@@ -1,0 +1,9 @@
+$ nanolb reset-credits ls --help
+exit 0
+Usage: nanolb reset-credits ls <ACCOUNT>
+
+Arguments:
+  <ACCOUNT>  
+
+Options:
+  -h, --help  Print help

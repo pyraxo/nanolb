@@ -1,0 +1,232 @@
+{
+  "account_add_openrouter": {
+    "error": {
+      "error": {
+        "message": "missing string arg `api_key`"
+      }
+    },
+    "status": 400
+  },
+  "account_add_tokens": {
+    "error": {
+      "error": {
+        "message": "missing string arg `id_token`"
+      }
+    },
+    "status": 400
+  },
+  "account_import": {
+    "error": {
+      "error": {
+        "message": "auth_json.tokens.id_token missing"
+      }
+    },
+    "status": 400
+  },
+  "account_refresh": {
+    "error": {
+      "error": {
+        "message": "missing string arg `id`"
+      }
+    },
+    "status": 400
+  },
+  "account_remove": {
+    "error": {
+      "error": {
+        "message": "missing string arg `id`"
+      }
+    },
+    "status": 400
+  },
+  "account_update": {
+    "error": {
+      "error": {
+        "message": "missing string arg `id`"
+      }
+    },
+    "status": 400
+  },
+  "account_warmup": {
+    "error": {
+      "error": {
+        "message": "missing string arg `id`"
+      }
+    },
+    "status": 400
+  },
+  "accounts_list": {
+    "list": 0,
+    "status": 200
+  },
+  "analytics": {
+    "object": [
+      "cache",
+      "errors",
+      "latency",
+      "series",
+      "top",
+      "utilization"
+    ],
+    "status": 200
+  },
+  "key_create": {
+    "error": {
+      "error": {
+        "message": "missing string arg `name`"
+      }
+    },
+    "status": 400
+  },
+  "key_remove": {
+    "error": {
+      "error": {
+        "message": "missing string arg `id`"
+      }
+    },
+    "status": 400
+  },
+  "key_update": {
+    "error": {
+      "error": {
+        "message": "missing string arg `id`"
+      }
+    },
+    "status": 400
+  },
+  "keys_list": {
+    "list": 0,
+    "status": 200
+  },
+  "login_poll": {
+    "error": {
+      "error": {
+        "message": "missing string arg `login_id`"
+      }
+    },
+    "status": 400
+  },
+  "models": {
+    "list": 7,
+    "status": 200
+  },
+  "nope": {
+    "error": {
+      "error": {
+        "message": "unknown op `nope`"
+      }
+    },
+    "status": 404
+  },
+  "plan": {
+    "object": [
+      "accounts",
+      "generated_at",
+      "work_start"
+    ],
+    "status": 200
+  },
+  "requests": {
+    "list": 0,
+    "status": 200
+  },
+  "reset_credits_consume": {
+    "error": {
+      "error": {
+        "message": "missing string arg `id`"
+      }
+    },
+    "status": 400
+  },
+  "reset_credits_list": {
+    "error": {
+      "error": {
+        "message": "missing string arg `id`"
+      }
+    },
+    "status": 400
+  },
+  "session_delete": {
+    "error": {
+      "error": {
+        "message": "missing string arg `key`"
+      }
+    },
+    "status": 400
+  },
+  "sessions_list": {
+    "list": 0,
+    "status": 200
+  },
+  "sessions_purge": {
+    "error": {
+      "error": {
+        "message": "sessions_purge needs all, account or older_than"
+      }
+    },
+    "status": 400
+  },
+  "settings_get": {
+    "object": [
+      "codex_version",
+      "compress_upstream",
+      "first_event_timeout_secs",
+      "idle_timeout_secs",
+      "keepalive_secs",
+      "max_attempts",
+      "models",
+      "openrouter_base",
+      "openrouter_models",
+      "prewarm",
+      "pricing",
+      "realtime_base",
+      "sticky",
+      "strategy",
+      "upstream_base",
+      "usage_poll_secs",
+      "warmup_model"
+    ],
+    "status": 200
+  },
+  "settings_update": {
+    "object": [
+      "codex_version",
+      "compress_upstream",
+      "first_event_timeout_secs",
+      "idle_timeout_secs",
+      "keepalive_secs",
+      "max_attempts",
+      "models",
+      "openrouter_base",
+      "openrouter_models",
+      "prewarm",
+      "pricing",
+      "realtime_base",
+      "sticky",
+      "strategy",
+      "upstream_base",
+      "usage_poll_secs",
+      "warmup_model"
+    ],
+    "status": 200
+  },
+  "status": {
+    "object": [
+      "accounts",
+      "cost_24h",
+      "keys",
+      "requests_24h",
+      "started_at",
+      "sticky",
+      "strategy",
+      "tokens_24h",
+      "uptime_secs",
+      "version"
+    ],
+    "status": 200
+  },
+  "usage": {
+    "list": 0,
+    "status": 200
+  }
+}

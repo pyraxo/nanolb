@@ -1,0 +1,7 @@
+$ nanolb requests --help
+exit 0
+Usage: nanolb requests [OPTIONS]
+
+Options:
+      --limit <LIMIT>  [default: 50]
+  -h, --help           Print help

@@ -1,0 +1,437 @@
+{
+  "DELETE /v1/responses": {
+    "body": {
+      "error": {
+        "code": null,
+        "message": "invalid or missing api key",
+        "type": "api_error"
+      }
+    },
+    "status": 401
+  },
+  "GET /admin/status": {
+    "body": {
+      "error": {
+        "message": "invalid admin token"
+      }
+    },
+    "status": 401
+  },
+  "GET /admin/usage?since=1h&group=model": {
+    "body": [],
+    "status": 200
+  },
+  "GET /api/codex/usage": {
+    "body": {
+      "error": {
+        "code": 401,
+        "message": "invalid or missing api key"
+      }
+    },
+    "status": 401
+  },
+  "GET /api/v1/auth/key": {
+    "body": {
+      "error": {
+        "code": 401,
+        "message": "invalid or missing api key"
+      }
+    },
+    "status": 401
+  },
+  "GET /api/v1/key": {
+    "body": {
+      "error": {
+        "code": 401,
+        "message": "invalid or missing api key"
+      }
+    },
+    "status": 401
+  },
+  "GET /api/v1/models": {
+    "body": {
+      "error": {
+        "code": 401,
+        "message": "invalid or missing api key"
+      }
+    },
+    "status": 401
+  },
+  "GET /backend-api/codex/models": {
+    "body": {
+      "error": {
+        "code": null,
+        "message": "invalid or missing api key",
+        "type": "api_error"
+      }
+    },
+    "status": 401
+  },
+  "GET /backend-api/codex/responses": {
+    "body": {
+      "error": {
+        "code": null,
+        "message": "invalid or missing api key",
+        "type": "api_error"
+      }
+    },
+    "status": 401
+  },
+  "GET /backend-api/codex/rtc_x": {
+    "body": {
+      "error": {
+        "code": null,
+        "message": "invalid or missing api key",
+        "type": "api_error"
+      }
+    },
+    "status": 401
+  },
+  "GET /backend-api/wham/usage": {
+    "body": {
+      "error": {
+        "code": null,
+        "message": "invalid or missing api key",
+        "type": "api_error"
+      }
+    },
+    "status": 401
+  },
+  "GET /health": {
+    "body": "ok",
+    "status": 200
+  },
+  "GET /nope": {
+    "body": {
+      "error": {
+        "message": "invalid admin token"
+      }
+    },
+    "status": 401
+  },
+  "GET /v1/chat/completions": {
+    "body": {
+      "error": {
+        "code": null,
+        "message": "invalid or missing api key",
+        "type": "api_error"
+      }
+    },
+    "status": 401
+  },
+  "GET /v1/live/rtc_x": {
+    "body": {
+      "error": {
+        "code": null,
+        "message": "invalid or missing api key",
+        "type": "api_error"
+      }
+    },
+    "status": 401
+  },
+  "GET /v1/models": {
+    "body": {
+      "error": {
+        "code": null,
+        "message": "invalid or missing api key",
+        "type": "api_error"
+      }
+    },
+    "status": 401
+  },
+  "GET /v1/models anthropic-version": {
+    "body": {
+      "error": {
+        "message": "invalid or missing api key",
+        "type": "authentication_error"
+      },
+      "type": "error"
+    },
+    "status": 401
+  },
+  "GET /v1/realtime": {
+    "body": {
+      "error": {
+        "code": null,
+        "message": "invalid or missing api key",
+        "type": "api_error"
+      }
+    },
+    "status": 401
+  },
+  "GET /v1/responses": {
+    "body": {
+      "error": {
+        "code": null,
+        "message": "invalid or missing api key",
+        "type": "api_error"
+      }
+    },
+    "status": 401
+  },
+  "GET /v1/usage": {
+    "body": {
+      "error": {
+        "code": null,
+        "message": "invalid or missing api key",
+        "type": "api_error"
+      }
+    },
+    "status": 401
+  },
+  "POST /admin/account_update missing": {
+    "body": {
+      "error": {
+        "message": "account nope not found (use an id, email or label)"
+      }
+    },
+    "status": 404
+  },
+  "POST /admin/analytics bad-view": {
+    "body": {
+      "error": {
+        "message": "unknown view `nope`"
+      }
+    },
+    "status": 400
+  },
+  "POST /admin/key_update missing": {
+    "body": {
+      "error": {
+        "message": "key nope not found"
+      }
+    },
+    "status": 404
+  },
+  "POST /admin/login_poll missing": {
+    "body": {
+      "error": {
+        "message": "login nope not found"
+      }
+    },
+    "status": 404
+  },
+  "POST /admin/nope": {
+    "body": {
+      "error": {
+        "message": "unknown op `nope`"
+      }
+    },
+    "status": 404
+  },
+  "POST /admin/sessions_purge all": {
+    "body": {
+      "removed": 0
+    },
+    "status": 200
+  },
+  "POST /admin/settings_update unknown": {
+    "body": {
+      "error": {
+        "message": "unknown setting `nope`"
+      }
+    },
+    "status": 400
+  },
+  "POST /admin/status": {
+    "body": {
+      "error": {
+        "message": "invalid admin token"
+      }
+    },
+    "status": 401
+  },
+  "POST /admin/status bad-token": {
+    "body": {
+      "error": {
+        "message": "invalid admin token"
+      }
+    },
+    "status": 401
+  },
+  "POST /admin/usage invalid-json": {
+    "body": {
+      "error": {
+        "message": "invalid json: key must be a string at line 1 column 2"
+      }
+    },
+    "status": 400
+  },
+  "POST /api/v1/chat/completions": {
+    "body": {
+      "error": {
+        "code": 401,
+        "message": "invalid or missing api key"
+      }
+    },
+    "status": 401
+  },
+  "POST /backend-api/codex/images/edits": {
+    "body": {
+      "error": {
+        "code": null,
+        "message": "invalid or missing api key",
+        "type": "api_error"
+      }
+    },
+    "status": 401
+  },
+  "POST /backend-api/codex/images/generations": {
+    "body": {
+      "error": {
+        "code": null,
+        "message": "invalid or missing api key",
+        "type": "api_error"
+      }
+    },
+    "status": 401
+  },
+  "POST /backend-api/codex/realtime/calls": {
+    "body": {
+      "error": {
+        "code": null,
+        "message": "invalid or missing api key",
+        "type": "api_error"
+      }
+    },
+    "status": 401
+  },
+  "POST /backend-api/codex/responses": {
+    "body": {
+      "error": {
+        "code": null,
+        "message": "invalid or missing api key",
+        "type": "api_error"
+      }
+    },
+    "status": 401
+  },
+  "POST /backend-api/files": {
+    "body": {
+      "error": {
+        "code": null,
+        "message": "invalid or missing api key",
+        "type": "api_error"
+      }
+    },
+    "status": 401
+  },
+  "POST /backend-api/files/file_x/uploaded": {
+    "body": {
+      "error": {
+        "code": null,
+        "message": "invalid or missing api key",
+        "type": "api_error"
+      }
+    },
+    "status": 401
+  },
+  "POST /backend-api/transcribe": {
+    "body": {
+      "error": {
+        "code": null,
+        "message": "invalid or missing api key",
+        "type": "api_error"
+      }
+    },
+    "status": 401
+  },
+  "POST /mcp": {
+    "body": {
+      "error": {
+        "message": "invalid admin token"
+      }
+    },
+    "status": 401
+  },
+  "POST /v1/audio/transcriptions": {
+    "body": {
+      "error": {
+        "code": null,
+        "message": "invalid or missing api key",
+        "type": "api_error"
+      }
+    },
+    "status": 401
+  },
+  "POST /v1/chat/completions": {
+    "body": {
+      "error": {
+        "code": null,
+        "message": "invalid or missing api key",
+        "type": "api_error"
+      }
+    },
+    "status": 401
+  },
+  "POST /v1/embeddings": {
+    "body": {
+      "error": {
+        "code": null,
+        "message": "invalid or missing api key",
+        "type": "api_error"
+      }
+    },
+    "status": 401
+  },
+  "POST /v1/images/edits": {
+    "body": {
+      "error": {
+        "code": null,
+        "message": "invalid or missing api key",
+        "type": "api_error"
+      }
+    },
+    "status": 401
+  },
+  "POST /v1/images/generations": {
+    "body": {
+      "error": {
+        "code": null,
+        "message": "invalid or missing api key",
+        "type": "api_error"
+      }
+    },
+    "status": 401
+  },
+  "POST /v1/messages": {
+    "body": {
+      "error": {
+        "message": "invalid or missing api key",
+        "type": "authentication_error"
+      },
+      "type": "error"
+    },
+    "status": 401
+  },
+  "POST /v1/messages/count_tokens": {
+    "body": {
+      "error": {
+        "message": "invalid or missing api key",
+        "type": "authentication_error"
+      },
+      "type": "error"
+    },
+    "status": 401
+  },
+  "POST /v1/realtime/calls": {
+    "body": {
+      "error": {
+        "code": null,
+        "message": "invalid or missing api key",
+        "type": "api_error"
+      }
+    },
+    "status": 401
+  },
+  "POST /v1/responses": {
+    "body": {
+      "error": {
+        "code": null,
+        "message": "invalid or missing api key",
+        "type": "api_error"
+      }
+    },
+    "status": 401
+  }
+}

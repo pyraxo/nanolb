@@ -1,0 +1,8 @@
+$ nanolb usage --help
+exit 0
+Usage: nanolb usage [OPTIONS]
+
+Options:
+      --since <SINCE>  [default: 24h]
+      --group <GROUP>  
+  -h, --help           Print help

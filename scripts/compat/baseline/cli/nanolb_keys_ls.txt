@@ -1,0 +1,6 @@
+$ nanolb keys ls --help
+exit 0
+Usage: nanolb keys ls
+
+Options:
+  -h, --help  Print help

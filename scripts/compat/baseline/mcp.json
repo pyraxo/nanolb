@@ -1,0 +1,783 @@
+{
+  "calls": {
+    "account_remove": {
+      "isError": true,
+      "text": "missing string arg `id`"
+    },
+    "nope": {
+      "isError": true,
+      "text": "unknown op `nope`"
+    },
+    "settings_get": {
+      "isError": false,
+      "text": {
+        "codex_version": "0.160.0",
+        "compress_upstream": true,
+        "first_event_timeout_secs": 90,
+        "idle_timeout_secs": 600,
+        "keepalive_secs": 15,
+        "max_attempts": 4,
+        "models": [
+          "gpt-6.1-sol",
+          "gpt-6-sol",
+          "gpt-6-astra",
+          "gpt-6-luna",
+          "gpt-5.6-sol",
+          "gpt-5.6-terra",
+          "gpt-5.6-luna"
+        ],
+        "openrouter_base": "https://openrouter.ai/api/v1",
+        "openrouter_models": [
+          "z-ai/glm-5.3-flash",
+          "deepseek/deepseek-v4.1-flash"
+        ],
+        "prewarm": false,
+        "pricing": {
+          "gpt-5": [
+            1.25,
+            0.125,
+            10.0
+          ],
+          "gpt-5-mini": [
+            0.25,
+            0.025,
+            2.0
+          ],
+          "gpt-5.1": [
+            1.25,
+            0.125,
+            10.0
+          ],
+          "gpt-5.1-codex-mini": [
+            0.25,
+            0.025,
+            2.0
+          ],
+          "gpt-5.2": [
+            1.75,
+            0.175,
+            14.0
+          ],
+          "gpt-5.3": [
+            1.75,
+            0.175,
+            14.0
+          ],
+          "gpt-5.4": [
+            2.5,
+            0.25,
+            15.0
+          ],
+          "gpt-5.4-mini": [
+            0.75,
+            0.075,
+            4.5
+          ],
+          "gpt-5.4-nano": [
+            0.2,
+            0.02,
+            1.25
+          ],
+          "gpt-5.4-pro": [
+            30.0,
+            30.0,
+            180.0
+          ],
+          "gpt-5.5": [
+            5.0,
+            0.5,
+            30.0
+          ],
+          "gpt-5.5-pro": [
+            30.0,
+            30.0,
+            180.0
+          ],
+          "gpt-5.6-luna": [
+            0.2,
+            0.02,
+            1.2
+          ],
+          "gpt-5.6-sol": [
+            4.0,
+            0.4,
+            20.0
+          ],
+          "gpt-5.6-terra": [
+            2.0,
+            0.2,
+            12.0
+          ],
+          "gpt-6-astra": [
+            10.0,
+            1.0,
+            50.0
+          ],
+          "gpt-6-luna": [
+            0.1,
+            0.01,
+            0.5
+          ],
+          "gpt-6-sol": [
+            2.0,
+            0.2,
+            10.0
+          ]
+        },
+        "realtime_base": "https://api.openai.com/v1",
+        "sticky": true,
+        "strategy": "preserve",
+        "upstream_base": "https://chatgpt.com/backend-api",
+        "usage_poll_secs": 60,
+        "warmup_model": "gpt-6-luna"
+      }
+    }
+  },
+  "initialize": {
+    "capabilities": {
+      "tools": {}
+    },
+    "instructions": "Admin tools for the nanolb LLM load balancer: manage accounts, API keys, routing settings and usage.",
+    "protocolVersion": "2025-06-18",
+    "serverInfo": {
+      "name": "rmcp"
+    }
+  },
+  "tool_names": [
+    "account_add_openrouter",
+    "account_add_tokens",
+    "account_import",
+    "account_refresh",
+    "account_remove",
+    "account_update",
+    "account_warmup",
+    "accounts_list",
+    "analytics",
+    "key_create",
+    "key_remove",
+    "key_update",
+    "keys_list",
+    "login_poll",
+    "login_start",
+    "models",
+    "plan",
+    "requests",
+    "reset_credits_consume",
+    "reset_credits_list",
+    "session_delete",
+    "sessions_list",
+    "sessions_purge",
+    "settings_get",
+    "settings_update",
+    "status",
+    "usage"
+  ],
+  "tools": {
+    "account_add_openrouter": {
+      "description": "Add an OpenRouter API key as an upstream account. Requests for vendor-prefixed models other than openai/ (e.g. z-ai/glm-5.3-flash, deepseek/deepseek-v4.1-flash) route to OpenRouter accounts.",
+      "inputSchema": {
+        "properties": {
+          "api_key": {
+            "type": "string"
+          },
+          "label": {
+            "description": "Human-readable label",
+            "type": "string"
+          }
+        },
+        "required": [
+          "api_key"
+        ],
+        "type": "object"
+      }
+    },
+    "account_add_tokens": {
+      "description": "Add an account from raw OAuth tokens.",
+      "inputSchema": {
+        "properties": {
+          "access_token": {
+            "type": "string"
+          },
+          "id_token": {
+            "type": "string"
+          },
+          "label": {
+            "description": "Human-readable label",
+            "type": "string"
+          },
+          "refresh_token": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id_token",
+          "access_token",
+          "refresh_token"
+        ],
+        "type": "object"
+      }
+    },
+    "account_import": {
+      "description": "Add an account from the contents of a Codex CLI ~/.codex/auth.json (pass the parsed object or the raw JSON string).",
+      "inputSchema": {
+        "properties": {
+          "auth_json": {
+            "description": "Contents of ~/.codex/auth.json",
+            "type": [
+              "object",
+              "string"
+            ]
+          },
+          "label": {
+            "description": "Human-readable label",
+            "type": "string"
+          }
+        },
+        "required": [
+          "auth_json"
+        ],
+        "type": "object"
+      }
+    },
+    "account_refresh": {
+      "description": "Refresh an account's OAuth tokens and fetch its live usage and rate limits.",
+      "inputSchema": {
+        "properties": {
+          "id": {
+            "description": "Account id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      }
+    },
+    "account_remove": {
+      "description": "Remove an account permanently.",
+      "inputSchema": {
+        "properties": {
+          "id": {
+            "description": "Account id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      }
+    },
+    "account_update": {
+      "description": "Update an account. enabled toggles routing; priority (lower is used first) matters for the priority strategy; warmup schedules a periodic tiny prompt that starts the account's rate-limit window, or null to remove it.",
+      "inputSchema": {
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "id": {
+            "type": "string"
+          },
+          "label": {
+            "description": "Human-readable label",
+            "type": "string"
+          },
+          "priority": {
+            "type": "integer"
+          },
+          "warmup": {
+            "description": "Cron schedule for the warmup prompt, or null to disable",
+            "properties": {
+              "cron": {
+                "description": "Standard 5-field cron expression (minute hour day-of-month month day-of-week), e.g. \"0 4 * * *\" for daily at 04:00",
+                "type": "string"
+              },
+              "model": {
+                "type": "string"
+              },
+              "prompt": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "cron"
+            ],
+            "type": [
+              "object",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      }
+    },
+    "account_warmup": {
+      "description": "Fire the account's warmup prompt immediately. Returns {ok, status, error?}.",
+      "inputSchema": {
+        "properties": {
+          "id": {
+            "description": "Account id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      }
+    },
+    "accounts_list": {
+      "description": "List all upstream ChatGPT/Codex accounts with plan, enabled state, priority, availability, cooldown, in-flight count, rate-limit usage, last error and warmup schedule.",
+      "inputSchema": {
+        "properties": {},
+        "required": [],
+        "type": "object"
+      }
+    },
+    "analytics": {
+      "description": "Usage analytics from the request log. Views: series (time series per account, model or key), latency (p50 and p95 latency and TTFB), errors (error rate), cache (cached/input token ratio), top (top keys and models by tokens and cost), utilization (each account's share of tokens per bucket), all (default: every view).",
+      "inputSchema": {
+        "properties": {
+          "bucket": {
+            "description": "Time bucket (default day)",
+            "enum": [
+              "hour",
+              "day"
+            ],
+            "type": "string"
+          },
+          "by": {
+            "description": "Grouping dimension (default account)",
+            "enum": [
+              "account",
+              "model",
+              "key",
+              "all"
+            ],
+            "type": "string"
+          },
+          "limit": {
+            "description": "Rows for the top view (default 10)",
+            "type": "integer"
+          },
+          "since": {
+            "description": "1h, 24h, 7d, 30d or an RFC3339 timestamp (default 7d)",
+            "type": "string"
+          },
+          "view": {
+            "enum": [
+              "series",
+              "latency",
+              "errors",
+              "cache",
+              "top",
+              "utilization",
+              "all"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      }
+    },
+    "key_create": {
+      "description": "Create a client API key. The secret (nlb-...) is returned once in the \"key\" field; store it immediately. Optional accounts and models restrict what the key may use; limits cap spend.",
+      "inputSchema": {
+        "properties": {
+          "accounts": {
+            "description": "Account ids the key may use; omit for all",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "expires_at": {
+            "description": "RFC3339 timestamp",
+            "type": "string"
+          },
+          "limits": {
+            "description": "Usage caps. Each item is {window, max_tokens?, max_cost_usd?, max_requests?}; the key is blocked once any set max is reached in that window.",
+            "items": {
+              "properties": {
+                "max_cost_usd": {
+                  "type": "number"
+                },
+                "max_requests": {
+                  "type": "integer"
+                },
+                "max_tokens": {
+                  "type": "integer"
+                },
+                "window": {
+                  "enum": [
+                    "day",
+                    "week",
+                    "month",
+                    "total"
+                  ],
+                  "type": "string"
+                }
+              },
+              "required": [
+                "window"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "models": {
+            "description": "Model ids the key may use; omit for all",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      }
+    },
+    "key_remove": {
+      "description": "Delete a client API key.",
+      "inputSchema": {
+        "properties": {
+          "id": {
+            "description": "Key id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      }
+    },
+    "key_update": {
+      "description": "Update a client API key; only the given fields change.",
+      "inputSchema": {
+        "properties": {
+          "accounts": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "expires_at": {
+            "description": "RFC3339 timestamp",
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "limits": {
+            "description": "Usage caps. Each item is {window, max_tokens?, max_cost_usd?, max_requests?}; the key is blocked once any set max is reached in that window.",
+            "items": {
+              "properties": {
+                "max_cost_usd": {
+                  "type": "number"
+                },
+                "max_requests": {
+                  "type": "integer"
+                },
+                "max_tokens": {
+                  "type": "integer"
+                },
+                "window": {
+                  "enum": [
+                    "day",
+                    "week",
+                    "month",
+                    "total"
+                  ],
+                  "type": "string"
+                }
+              },
+              "required": [
+                "window"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "models": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      }
+    },
+    "keys_list": {
+      "description": "List client API keys with limits, allowed accounts and models, and current day/week/month/total usage. Secrets are never shown.",
+      "inputSchema": {
+        "properties": {},
+        "required": [],
+        "type": "object"
+      }
+    },
+    "login_poll": {
+      "description": "Check a device-code login started with login_start. Returns status pending, done (with the new account) or error.",
+      "inputSchema": {
+        "properties": {
+          "login_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "login_id"
+        ],
+        "type": "object"
+      }
+    },
+    "login_start": {
+      "description": "Start an OpenAI device-code login. Returns a verification_url and user_code for the human to enter; the server polls in the background. Follow with login_poll.",
+      "inputSchema": {
+        "properties": {
+          "label": {
+            "description": "Human-readable label",
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      }
+    },
+    "models": {
+      "description": "List the model ids served to clients.",
+      "inputSchema": {
+        "properties": {},
+        "required": [],
+        "type": "object"
+      }
+    },
+    "plan": {
+      "description": "Quota planner. For each Codex account, projects when each rate-limit window will be exhausted from recent usage and recommends a daily warmup cron so that windows are staggered and reset at useful times during the working day. With apply=true the recommended cron is written to each account's warmup schedule.",
+      "inputSchema": {
+        "properties": {
+          "apply": {
+            "description": "Write the recommended warmup cron to the accounts",
+            "type": "boolean"
+          },
+          "lookback": {
+            "description": "Recent-usage span for the burn rate, such as 2h or 6h (default 6h)",
+            "type": "string"
+          },
+          "work_start": {
+            "description": "Start of the working day, HH:MM local time (default 09:00)",
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      }
+    },
+    "requests": {
+      "description": "List the most recent proxied requests with key, account, model, status, token counts, cost and latency.",
+      "inputSchema": {
+        "properties": {
+          "limit": {
+            "description": "Default 50",
+            "type": "integer"
+          }
+        },
+        "required": [],
+        "type": "object"
+      }
+    },
+    "reset_credits_consume": {
+      "description": "Spend one rate-limit reset credit on a Codex account to reset its usage windows now. Without credit_id the available credit that expires first is used. Returns the upstream result and the refreshed account.",
+      "inputSchema": {
+        "properties": {
+          "credit_id": {
+            "type": "string"
+          },
+          "id": {
+            "description": "Account id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      }
+    },
+    "reset_credits_list": {
+      "description": "List the rate-limit reset credits banked on a Codex account: {credits: [{id, status, expires_at, ...}], available_count}.",
+      "inputSchema": {
+        "properties": {
+          "id": {
+            "description": "Account id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      }
+    },
+    "session_delete": {
+      "description": "Delete one sticky-session pin so the conversation is routed fresh on its next request.",
+      "inputSchema": {
+        "properties": {
+          "key": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "key"
+        ],
+        "type": "object"
+      }
+    },
+    "sessions_list": {
+      "description": "List sticky-session pins (conversation key, pinned account, last used), newest first. Filter by key substring or account id.",
+      "inputSchema": {
+        "properties": {
+          "account": {
+            "description": "Account id",
+            "type": "string"
+          },
+          "key": {
+            "description": "Substring of the session key",
+            "type": "string"
+          },
+          "limit": {
+            "description": "Default 100",
+            "type": "integer"
+          }
+        },
+        "required": [],
+        "type": "object"
+      }
+    },
+    "sessions_purge": {
+      "description": "Delete many sticky-session pins: all, those pinned to one account, or those not used for longer than older_than. At least one criterion is required.",
+      "inputSchema": {
+        "properties": {
+          "account": {
+            "description": "Account id",
+            "type": "string"
+          },
+          "all": {
+            "type": "boolean"
+          },
+          "older_than": {
+            "description": "Age such as 30m, 12h or 7d",
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      }
+    },
+    "settings_get": {
+      "description": "Get load-balancer settings: strategy, sticky, max_attempts, models and pricing.",
+      "inputSchema": {
+        "properties": {},
+        "required": [],
+        "type": "object"
+      }
+    },
+    "settings_update": {
+      "description": "Update load-balancer settings; only the given fields change. strategy picks the account for a new conversation: preserve = least-used account first (spreads load); burn = account whose weekly window resets soonest first (uses quota before it resets); round_robin = rotate; priority = lowest account priority number first, falling through when limited. sticky (default on) keeps a conversation on one account to keep its prompt cache warm, moving only when that account is limited or failing.",
+      "inputSchema": {
+        "properties": {
+          "max_attempts": {
+            "description": "Accounts to try per request before failing",
+            "type": "integer"
+          },
+          "models": {
+            "description": "Models exposed to clients",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "pricing": {
+            "additionalProperties": {
+              "items": {
+                "type": "number"
+              },
+              "maxItems": 3,
+              "minItems": 3,
+              "type": "array"
+            },
+            "description": "Model to [input, cached_input, output] USD per 1M tokens",
+            "type": "object"
+          },
+          "sticky": {
+            "type": "boolean"
+          },
+          "strategy": {
+            "enum": [
+              "preserve",
+              "burn",
+              "round_robin",
+              "priority",
+              "latency"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      }
+    },
+    "status": {
+      "description": "Show server status: version, uptime, routing strategy, sticky mode, accounts with live rate limits, key count, and requests and cost over the last 24h.",
+      "inputSchema": {
+        "properties": {},
+        "required": [],
+        "type": "object"
+      }
+    },
+    "usage": {
+      "description": "Aggregate usage (requests, tokens, cost, errors, average latency) over a time range, grouped as requested.",
+      "inputSchema": {
+        "properties": {
+          "group": {
+            "description": "Default all",
+            "enum": [
+              "account",
+              "key",
+              "model",
+              "hour",
+              "day",
+              "all"
+            ],
+            "type": "string"
+          },
+          "since": {
+            "description": "1h, 24h, 7d, 30d or an RFC3339 timestamp (default 24h)",
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      }
+    }
+  }
+}

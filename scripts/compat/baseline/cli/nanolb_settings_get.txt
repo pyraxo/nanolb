@@ -1,0 +1,6 @@
+$ nanolb settings get --help
+exit 0
+Usage: nanolb settings get
+
+Options:
+  -h, --help  Print help

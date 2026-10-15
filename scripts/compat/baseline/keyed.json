@@ -1,0 +1,986 @@
+{
+  "GET /api/codex/usage": {
+    "body": {
+      "additional_rate_limits": [],
+      "credits": null,
+      "plan_type": "plus",
+      "rate_limit": {
+        "allowed": false,
+        "limit_reached": true,
+        "primary_window": null,
+        "secondary_window": null
+      }
+    },
+    "status": 200
+  },
+  "GET /api/v1/auth/key": {
+    "body": {
+      "data": {
+        "byok_usage": 0,
+        "expires_at": null,
+        "is_free_tier": false,
+        "is_management_key": false,
+        "is_provisioning_key": false,
+        "label": "<label>",
+        "limit": null,
+        "limit_remaining": null,
+        "limit_reset": null,
+        "rate_limit": {
+          "interval": "10s",
+          "requests": -1
+        },
+        "usage": 0.0,
+        "usage_daily": 0.0,
+        "usage_monthly": 0.0,
+        "usage_weekly": 0.0
+      }
+    },
+    "status": 200
+  },
+  "GET /api/v1/key": {
+    "body": {
+      "data": {
+        "byok_usage": 0,
+        "expires_at": null,
+        "is_free_tier": false,
+        "is_management_key": false,
+        "is_provisioning_key": false,
+        "label": "<label>",
+        "limit": null,
+        "limit_remaining": null,
+        "limit_reset": null,
+        "rate_limit": {
+          "interval": "10s",
+          "requests": -1
+        },
+        "usage": 0.0,
+        "usage_daily": 0.0,
+        "usage_monthly": 0.0,
+        "usage_weekly": 0.0
+      }
+    },
+    "status": 200
+  },
+  "GET /api/v1/models": {
+    "body": {
+      "data": [
+        {
+          "architecture": {
+            "input_modalities": [
+              "text",
+              "image"
+            ],
+            "instruct_type": null,
+            "modality": "text+image->text",
+            "output_modalities": [
+              "text"
+            ],
+            "tokenizer": "GPT"
+          },
+          "canonical_slug": "openai/gpt-6.1-sol",
+          "context_length": 272000,
+          "created": "<created>",
+          "description": "",
+          "id": "openai/gpt-6.1-sol",
+          "name": "openai/gpt-6.1-sol",
+          "per_request_limits": null,
+          "pricing": {
+            "completion": "0",
+            "image": "0",
+            "input_cache_read": "0",
+            "internal_reasoning": "0",
+            "prompt": "0",
+            "request": "0",
+            "web_search": "0"
+          },
+          "supported_parameters": [
+            "tools",
+            "tool_choice",
+            "reasoning",
+            "include_reasoning",
+            "response_format",
+            "structured_outputs",
+            "max_tokens"
+          ],
+          "top_provider": {
+            "context_length": 272000,
+            "is_moderated": false,
+            "max_completion_tokens": 128000
+          }
+        },
+        {
+          "architecture": {
+            "input_modalities": [
+              "text",
+              "image"
+            ],
+            "instruct_type": null,
+            "modality": "text+image->text",
+            "output_modalities": [
+              "text"
+            ],
+            "tokenizer": "GPT"
+          },
+          "canonical_slug": "openai/gpt-6-sol",
+          "context_length": 272000,
+          "created": "<created>",
+          "description": "",
+          "id": "openai/gpt-6-sol",
+          "name": "openai/gpt-6-sol",
+          "per_request_limits": null,
+          "pricing": {
+            "completion": "0.00001",
+            "image": "0",
+            "input_cache_read": "0.00000020000000000000002",
+            "internal_reasoning": "0",
+            "prompt": "0.000002",
+            "request": "0",
+            "web_search": "0"
+          },
+          "supported_parameters": [
+            "tools",
+            "tool_choice",
+            "reasoning",
+            "include_reasoning",
+            "response_format",
+            "structured_outputs",
+            "max_tokens"
+          ],
+          "top_provider": {
+            "context_length": 272000,
+            "is_moderated": false,
+            "max_completion_tokens": 128000
+          }
+        },
+        {
+          "architecture": {
+            "input_modalities": [
+              "text",
+              "image"
+            ],
+            "instruct_type": null,
+            "modality": "text+image->text",
+            "output_modalities": [
+              "text"
+            ],
+            "tokenizer": "GPT"
+          },
+          "canonical_slug": "openai/gpt-6-astra",
+          "context_length": 272000,
+          "created": "<created>",
+          "description": "",
+          "id": "openai/gpt-6-astra",
+          "name": "openai/gpt-6-astra",
+          "per_request_limits": null,
+          "pricing": {
+            "completion": "0.00005",
+            "image": "0",
+            "input_cache_read": "0.000001",
+            "internal_reasoning": "0",
+            "prompt": "0.00001",
+            "request": "0",
+            "web_search": "0"
+          },
+          "supported_parameters": [
+            "tools",
+            "tool_choice",
+            "reasoning",
+            "include_reasoning",
+            "response_format",
+            "structured_outputs",
+            "max_tokens"
+          ],
+          "top_provider": {
+            "context_length": 272000,
+            "is_moderated": false,
+            "max_completion_tokens": 128000
+          }
+        },
+        {
+          "architecture": {
+            "input_modalities": [
+              "text",
+              "image"
+            ],
+            "instruct_type": null,
+            "modality": "text+image->text",
+            "output_modalities": [
+              "text"
+            ],
+            "tokenizer": "GPT"
+          },
+          "canonical_slug": "openai/gpt-6-luna",
+          "context_length": 272000,
+          "created": "<created>",
+          "description": "",
+          "id": "openai/gpt-6-luna",
+          "name": "openai/gpt-6-luna",
+          "per_request_limits": null,
+          "pricing": {
+            "completion": "0.0000005",
+            "image": "0",
+            "input_cache_read": "0.00000001",
+            "internal_reasoning": "0",
+            "prompt": "0.00000010000000000000001",
+            "request": "0",
+            "web_search": "0"
+          },
+          "supported_parameters": [
+            "tools",
+            "tool_choice",
+            "reasoning",
+            "include_reasoning",
+            "response_format",
+            "structured_outputs",
+            "max_tokens"
+          ],
+          "top_provider": {
+            "context_length": 272000,
+            "is_moderated": false,
+            "max_completion_tokens": 128000
+          }
+        },
+        {
+          "architecture": {
+            "input_modalities": [
+              "text",
+              "image"
+            ],
+            "instruct_type": null,
+            "modality": "text+image->text",
+            "output_modalities": [
+              "text"
+            ],
+            "tokenizer": "GPT"
+          },
+          "canonical_slug": "openai/gpt-5.6-sol",
+          "context_length": 272000,
+          "created": "<created>",
+          "description": "",
+          "id": "openai/gpt-5.6-sol",
+          "name": "openai/gpt-5.6-sol",
+          "per_request_limits": null,
+          "pricing": {
+            "completion": "0.00002",
+            "image": "0",
+            "input_cache_read": "0.00000040000000000000003",
+            "internal_reasoning": "0",
+            "prompt": "0.000004",
+            "request": "0",
+            "web_search": "0"
+          },
+          "supported_parameters": [
+            "tools",
+            "tool_choice",
+            "reasoning",
+            "include_reasoning",
+            "response_format",
+            "structured_outputs",
+            "max_tokens"
+          ],
+          "top_provider": {
+            "context_length": 272000,
+            "is_moderated": false,
+            "max_completion_tokens": 128000
+          }
+        },
+        {
+          "architecture": {
+            "input_modalities": [
+              "text",
+              "image"
+            ],
+            "instruct_type": null,
+            "modality": "text+image->text",
+            "output_modalities": [
+              "text"
+            ],
+            "tokenizer": "GPT"
+          },
+          "canonical_slug": "openai/gpt-5.6-terra",
+          "context_length": 272000,
+          "created": "<created>",
+          "description": "",
+          "id": "openai/gpt-5.6-terra",
+          "name": "openai/gpt-5.6-terra",
+          "per_request_limits": null,
+          "pricing": {
+            "completion": "0.000012",
+            "image": "0",
+            "input_cache_read": "0.00000020000000000000002",
+            "internal_reasoning": "0",
+            "prompt": "0.000002",
+            "request": "0",
+            "web_search": "0"
+          },
+          "supported_parameters": [
+            "tools",
+            "tool_choice",
+            "reasoning",
+            "include_reasoning",
+            "response_format",
+            "structured_outputs",
+            "max_tokens"
+          ],
+          "top_provider": {
+            "context_length": 272000,
+            "is_moderated": false,
+            "max_completion_tokens": 128000
+          }
+        },
+        {
+          "architecture": {
+            "input_modalities": [
+              "text",
+              "image"
+            ],
+            "instruct_type": null,
+            "modality": "text+image->text",
+            "output_modalities": [
+              "text"
+            ],
+            "tokenizer": "GPT"
+          },
+          "canonical_slug": "openai/gpt-5.6-luna",
+          "context_length": 272000,
+          "created": "<created>",
+          "description": "",
+          "id": "openai/gpt-5.6-luna",
+          "name": "openai/gpt-5.6-luna",
+          "per_request_limits": null,
+          "pricing": {
+            "completion": "0.0000012",
+            "image": "0",
+            "input_cache_read": "0.00000002",
+            "internal_reasoning": "0",
+            "prompt": "0.00000020000000000000002",
+            "request": "0",
+            "web_search": "0"
+          },
+          "supported_parameters": [
+            "tools",
+            "tool_choice",
+            "reasoning",
+            "include_reasoning",
+            "response_format",
+            "structured_outputs",
+            "max_tokens"
+          ],
+          "top_provider": {
+            "context_length": 272000,
+            "is_moderated": false,
+            "max_completion_tokens": 128000
+          }
+        }
+      ]
+    },
+    "status": 200
+  },
+  "GET /backend-api/codex/models": {
+    "body": {
+      "error": {
+        "code": null,
+        "message": "no available accounts",
+        "type": "api_error"
+      }
+    },
+    "status": 503
+  },
+  "GET /backend-api/codex/rtc_x": {
+    "body": "Connection header did not include 'upgrade'",
+    "status": 400
+  },
+  "GET /backend-api/wham/usage": {
+    "body": {
+      "additional_rate_limits": [],
+      "credits": null,
+      "plan_type": "plus",
+      "rate_limit": {
+        "allowed": false,
+        "limit_reached": true,
+        "primary_window": null,
+        "secondary_window": null
+      }
+    },
+    "status": 200
+  },
+  "GET /v1/live/..": {
+    "body": "Connection header did not include 'upgrade'",
+    "status": 400
+  },
+  "GET /v1/live/rtc_x": {
+    "body": "Connection header did not include 'upgrade'",
+    "status": 400
+  },
+  "GET /v1/models": {
+    "body": {
+      "data": [
+        {
+          "context_length": 272000,
+          "created": "<created>",
+          "id": "gpt-6.1-sol",
+          "object": "model",
+          "owned_by": "openai"
+        },
+        {
+          "context_length": 272000,
+          "created": "<created>",
+          "id": "gpt-6-sol",
+          "object": "model",
+          "owned_by": "openai"
+        },
+        {
+          "context_length": 272000,
+          "created": "<created>",
+          "id": "gpt-6-astra",
+          "object": "model",
+          "owned_by": "openai"
+        },
+        {
+          "context_length": 272000,
+          "created": "<created>",
+          "id": "gpt-6-luna",
+          "object": "model",
+          "owned_by": "openai"
+        },
+        {
+          "context_length": 272000,
+          "created": "<created>",
+          "id": "gpt-5.6-sol",
+          "object": "model",
+          "owned_by": "openai"
+        },
+        {
+          "context_length": 272000,
+          "created": "<created>",
+          "id": "gpt-5.6-terra",
+          "object": "model",
+          "owned_by": "openai"
+        },
+        {
+          "context_length": 272000,
+          "created": "<created>",
+          "id": "gpt-5.6-luna",
+          "object": "model",
+          "owned_by": "openai"
+        }
+      ],
+      "object": "list"
+    },
+    "status": 200
+  },
+  "GET /v1/models anthropic": {
+    "body": {
+      "data": [
+        {
+          "created_at": "<created_at>",
+          "display_name": "gpt-6.1-sol",
+          "id": "gpt-6.1-sol",
+          "type": "model"
+        },
+        {
+          "created_at": "<created_at>",
+          "display_name": "gpt-6-sol",
+          "id": "gpt-6-sol",
+          "type": "model"
+        },
+        {
+          "created_at": "<created_at>",
+          "display_name": "gpt-6-astra",
+          "id": "gpt-6-astra",
+          "type": "model"
+        },
+        {
+          "created_at": "<created_at>",
+          "display_name": "gpt-6-luna",
+          "id": "gpt-6-luna",
+          "type": "model"
+        },
+        {
+          "created_at": "<created_at>",
+          "display_name": "gpt-5.6-sol",
+          "id": "gpt-5.6-sol",
+          "type": "model"
+        },
+        {
+          "created_at": "<created_at>",
+          "display_name": "gpt-5.6-terra",
+          "id": "gpt-5.6-terra",
+          "type": "model"
+        },
+        {
+          "created_at": "<created_at>",
+          "display_name": "gpt-5.6-luna",
+          "id": "gpt-5.6-luna",
+          "type": "model"
+        }
+      ],
+      "first_id": "gpt-6.1-sol",
+      "has_more": false,
+      "last_id": "gpt-5.6-luna"
+    },
+    "status": 200
+  },
+  "GET /v1/realtime": {
+    "body": "Connection header did not include 'upgrade'",
+    "status": 400
+  },
+  "GET /v1/responses": {
+    "body": "Connection header did not include 'upgrade'",
+    "status": 400
+  },
+  "GET /v1/usage": {
+    "body": {
+      "account_pool_usage": {
+        "primary": null,
+        "secondary": null
+      },
+      "cached_input_tokens": 0,
+      "limits": [],
+      "request_count": 0,
+      "total_cost_usd": 0.0,
+      "total_tokens": 0,
+      "upstream_limits": []
+    },
+    "status": 200
+  },
+  "POST /api/v1/chat/completions array-body": {
+    "body": {
+      "error": {
+        "code": 400,
+        "message": "messages is required and must be a non-empty array"
+      }
+    },
+    "status": 400
+  },
+  "POST /api/v1/chat/completions empty-object": {
+    "body": {
+      "error": {
+        "code": 400,
+        "message": "messages is required and must be a non-empty array"
+      }
+    },
+    "status": 400
+  },
+  "POST /api/v1/chat/completions invalid-json": {
+    "body": {
+      "error": {
+        "code": 400,
+        "message": "invalid json: key must be a string at line 1 column 2"
+      }
+    },
+    "status": 400
+  },
+  "POST /api/v1/chat/completions no-accounts": {
+    "body": {
+      "error": {
+        "code": 503,
+        "message": "no codex accounts connected to serve model gpt-5.4"
+      }
+    },
+    "status": 503
+  },
+  "POST /backend-api/codex/images/edits array-body": {
+    "body": {
+      "error": {
+        "code": null,
+        "message": "at least one images[].image_url data URL is required",
+        "type": "api_error"
+      }
+    },
+    "status": 400
+  },
+  "POST /backend-api/codex/images/edits empty-object": {
+    "body": {
+      "error": {
+        "code": null,
+        "message": "at least one images[].image_url data URL is required",
+        "type": "api_error"
+      }
+    },
+    "status": 400
+  },
+  "POST /backend-api/codex/images/edits invalid-json": {
+    "body": {
+      "error": {
+        "code": null,
+        "message": "invalid json: key must be a string at line 1 column 2",
+        "type": "api_error"
+      }
+    },
+    "status": 400
+  },
+  "POST /backend-api/codex/images/edits no-accounts": {
+    "body": {
+      "error": {
+        "code": null,
+        "message": "at least one images[].image_url data URL is required",
+        "type": "api_error"
+      }
+    },
+    "status": 400
+  },
+  "POST /backend-api/codex/images/generations array-body": {
+    "body": {
+      "error": {
+        "code": null,
+        "message": "prompt is required",
+        "type": "api_error"
+      }
+    },
+    "status": 400
+  },
+  "POST /backend-api/codex/images/generations empty-object": {
+    "body": {
+      "error": {
+        "code": null,
+        "message": "prompt is required",
+        "type": "api_error"
+      }
+    },
+    "status": 400
+  },
+  "POST /backend-api/codex/images/generations invalid-json": {
+    "body": {
+      "error": {
+        "code": null,
+        "message": "invalid json: key must be a string at line 1 column 2",
+        "type": "api_error"
+      }
+    },
+    "status": 400
+  },
+  "POST /backend-api/codex/images/generations no-accounts": {
+    "body": {
+      "error": {
+        "code": null,
+        "message": "unsupported image model gpt-5.4, use a gpt-image-* model",
+        "type": "api_error"
+      }
+    },
+    "status": 400
+  },
+  "POST /backend-api/codex/realtime/calls": {
+    "body": {
+      "error": {
+        "code": null,
+        "message": "no available accounts",
+        "type": "api_error"
+      }
+    },
+    "status": 503
+  },
+  "POST /backend-api/codex/responses array-body": {
+    "body": "RemoteDisconnected",
+    "status": 0
+  },
+  "POST /backend-api/codex/responses empty-object": {
+    "body": {
+      "error": {
+        "code": null,
+        "message": "no codex accounts connected to serve model ",
+        "type": "api_error"
+      }
+    },
+    "status": 503
+  },
+  "POST /backend-api/codex/responses invalid-json": {
+    "body": {
+      "error": {
+        "code": null,
+        "message": "invalid json: key must be a string at line 1 column 2",
+        "type": "api_error"
+      }
+    },
+    "status": 400
+  },
+  "POST /backend-api/codex/responses no-accounts": {
+    "body": {
+      "error": {
+        "code": null,
+        "message": "no codex accounts connected to serve model gpt-5.4",
+        "type": "api_error"
+      }
+    },
+    "status": 503
+  },
+  "POST /backend-api/transcribe not-multipart": {
+    "body": "Invalid `boundary` for `multipart/form-data` request",
+    "status": 400
+  },
+  "POST /v1/audio/transcriptions not-multipart": {
+    "body": "Invalid `boundary` for `multipart/form-data` request",
+    "status": 400
+  },
+  "POST /v1/chat/completions array-body": {
+    "body": {
+      "error": {
+        "code": null,
+        "message": "messages is required and must be a non-empty array",
+        "type": "api_error"
+      }
+    },
+    "status": 400
+  },
+  "POST /v1/chat/completions empty-object": {
+    "body": {
+      "error": {
+        "code": null,
+        "message": "messages is required and must be a non-empty array",
+        "type": "api_error"
+      }
+    },
+    "status": 400
+  },
+  "POST /v1/chat/completions invalid-json": {
+    "body": {
+      "error": {
+        "code": null,
+        "message": "invalid json: key must be a string at line 1 column 2",
+        "type": "api_error"
+      }
+    },
+    "status": 400
+  },
+  "POST /v1/chat/completions no-accounts": {
+    "body": {
+      "error": {
+        "code": null,
+        "message": "no codex accounts connected to serve model gpt-5.4",
+        "type": "api_error"
+      }
+    },
+    "status": 503
+  },
+  "POST /v1/chat/completions openrouter-model": {
+    "body": {
+      "error": {
+        "code": null,
+        "message": "no openrouter accounts connected to serve model z-ai/glm-5.3-flash",
+        "type": "api_error"
+      }
+    },
+    "status": 503
+  },
+  "POST /v1/embeddings array-body": {
+    "body": {
+      "error": {
+        "code": null,
+        "message": "model \"\" is not supported for embeddings: use an OpenRouter model id such as openai/text-embedding-3-small",
+        "type": "api_error"
+      }
+    },
+    "status": 400
+  },
+  "POST /v1/embeddings empty-object": {
+    "body": {
+      "error": {
+        "code": null,
+        "message": "model \"\" is not supported for embeddings: use an OpenRouter model id such as openai/text-embedding-3-small",
+        "type": "api_error"
+      }
+    },
+    "status": 400
+  },
+  "POST /v1/embeddings invalid-json": {
+    "body": {
+      "error": {
+        "code": null,
+        "message": "invalid json: key must be a string at line 1 column 2",
+        "type": "api_error"
+      }
+    },
+    "status": 400
+  },
+  "POST /v1/embeddings no-accounts": {
+    "body": {
+      "error": {
+        "code": null,
+        "message": "model \"gpt-5.4\" is not supported for embeddings: use an OpenRouter model id such as openai/text-embedding-3-small",
+        "type": "api_error"
+      }
+    },
+    "status": 400
+  },
+  "POST /v1/embeddings slash-model": {
+    "body": {
+      "error": {
+        "code": null,
+        "message": "no openrouter accounts connected to serve embeddings",
+        "type": "api_error"
+      }
+    },
+    "status": 503
+  },
+  "POST /v1/images/edits not-multipart": {
+    "body": "Invalid `boundary` for `multipart/form-data` request",
+    "status": 400
+  },
+  "POST /v1/images/generations array-body": {
+    "body": {
+      "error": {
+        "code": null,
+        "message": "prompt is required",
+        "type": "api_error"
+      }
+    },
+    "status": 400
+  },
+  "POST /v1/images/generations empty-object": {
+    "body": {
+      "error": {
+        "code": null,
+        "message": "prompt is required",
+        "type": "api_error"
+      }
+    },
+    "status": 400
+  },
+  "POST /v1/images/generations invalid-json": {
+    "body": {
+      "error": {
+        "code": null,
+        "message": "invalid json: key must be a string at line 1 column 2",
+        "type": "api_error"
+      }
+    },
+    "status": 400
+  },
+  "POST /v1/images/generations no-accounts": {
+    "body": {
+      "error": {
+        "code": null,
+        "message": "unsupported image model gpt-5.4, use a gpt-image-* model",
+        "type": "api_error"
+      }
+    },
+    "status": 400
+  },
+  "POST /v1/messages array-body": {
+    "body": {
+      "error": {
+        "message": "messages must be an array",
+        "type": "invalid_request_error"
+      },
+      "type": "error"
+    },
+    "status": 400
+  },
+  "POST /v1/messages empty-object": {
+    "body": {
+      "error": {
+        "message": "messages must be an array",
+        "type": "invalid_request_error"
+      },
+      "type": "error"
+    },
+    "status": 400
+  },
+  "POST /v1/messages invalid-json": {
+    "body": {
+      "error": {
+        "message": "invalid json: key must be a string at line 1 column 2",
+        "type": "invalid_request_error"
+      },
+      "type": "error"
+    },
+    "status": 400
+  },
+  "POST /v1/messages no-accounts": {
+    "body": {
+      "error": {
+        "message": "no codex accounts connected to serve model gpt-5.4",
+        "type": "api_error"
+      },
+      "type": "error"
+    },
+    "status": 503
+  },
+  "POST /v1/messages/count_tokens array-body": {
+    "body": {
+      "input_tokens": 0
+    },
+    "status": 200
+  },
+  "POST /v1/messages/count_tokens empty-object": {
+    "body": {
+      "input_tokens": 0
+    },
+    "status": 200
+  },
+  "POST /v1/messages/count_tokens invalid-json": {
+    "body": {
+      "error": {
+        "message": "key must be a string at line 1 column 2",
+        "type": "invalid_request_error"
+      },
+      "type": "error"
+    },
+    "status": 400
+  },
+  "POST /v1/messages/count_tokens no-accounts": {
+    "body": {
+      "input_tokens": 8
+    },
+    "status": 200
+  },
+  "POST /v1/realtime/calls": {
+    "body": {
+      "error": {
+        "code": null,
+        "message": "no available accounts",
+        "type": "api_error"
+      }
+    },
+    "status": 503
+  },
+  "POST /v1/responses array-body": {
+    "body": "RemoteDisconnected",
+    "status": 0
+  },
+  "POST /v1/responses empty-object": {
+    "body": {
+      "error": {
+        "code": null,
+        "message": "no codex accounts connected to serve model ",
+        "type": "api_error"
+      }
+    },
+    "status": 503
+  },
+  "POST /v1/responses invalid-json": {
+    "body": {
+      "error": {
+        "code": null,
+        "message": "invalid json: key must be a string at line 1 column 2",
+        "type": "api_error"
+      }
+    },
+    "status": 400
+  },
+  "POST /v1/responses no-accounts": {
+    "body": {
+      "error": {
+        "code": null,
+        "message": "no codex accounts connected to serve model gpt-5.4",
+        "type": "api_error"
+      }
+    },
+    "status": 503
+  },
+  "key_create": {
+    "object": [
+      "accounts",
+      "created_at",
+      "enabled",
+      "expires_at",
+      "id",
+      "key",
+      "limits",
+      "models",
+      "name",
+      "prefix",
+      "usage"
+    ]
+  }
+}

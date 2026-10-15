@@ -1,0 +1,9 @@
+$ nanolb sessions purge --help
+exit 0
+Usage: nanolb sessions purge [OPTIONS]
+
+Options:
+      --all                      
+      --account <ACCOUNT>        
+      --older-than <OLDER_THAN>  
+  -h, --help                     Print help

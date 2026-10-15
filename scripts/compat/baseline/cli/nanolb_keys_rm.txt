@@ -1,0 +1,9 @@
+$ nanolb keys rm --help
+exit 0
+Usage: nanolb keys rm <ID>
+
+Arguments:
+  <ID>  
+
+Options:
+  -h, --help  Print help

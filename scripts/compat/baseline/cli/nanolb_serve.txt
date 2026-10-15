@@ -1,0 +1,8 @@
+$ nanolb serve --help
+exit 0
+Usage: nanolb serve [OPTIONS]
+
+Options:
+      --host <HOST>  [env: NANOLB_HOST=] [default: 127.0.0.1]
+      --port <PORT>  [env: NANOLB_PORT=] [default: 2455]
+  -h, --help         Print help

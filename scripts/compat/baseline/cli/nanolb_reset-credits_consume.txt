@@ -1,0 +1,10 @@
+$ nanolb reset-credits consume --help
+exit 0
+Usage: nanolb reset-credits consume [OPTIONS] <ACCOUNT>
+
+Arguments:
+  <ACCOUNT>  
+
+Options:
+      --credit <CREDIT>  
+  -h, --help             Print help

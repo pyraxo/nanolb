@@ -1,0 +1,7 @@
+$ nanolb codex-config --help
+exit 0
+Usage: nanolb codex-config [OPTIONS]
+
+Options:
+      --key <KEY>  
+  -h, --help       Print help

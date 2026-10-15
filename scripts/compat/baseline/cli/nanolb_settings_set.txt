@@ -1,0 +1,10 @@
+$ nanolb settings set --help
+exit 0
+Usage: nanolb settings set <KEY> <VALUE>
+
+Arguments:
+  <KEY>    
+  <VALUE>  
+
+Options:
+  -h, --help  Print help

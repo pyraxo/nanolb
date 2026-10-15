@@ -1,0 +1,13 @@
+$ nanolb keys update --help
+exit 0
+Usage: nanolb keys update [OPTIONS] <ID>
+
+Arguments:
+  <ID>  
+
+Options:
+      --account <ACCOUNTS>  
+      --model <MODELS>      
+      --limit <LIMITS>      
+      --expires <EXPIRES>   
+  -h, --help                Print help

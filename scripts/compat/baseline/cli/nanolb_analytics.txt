@@ -1,0 +1,11 @@
+$ nanolb analytics --help
+exit 0
+Usage: nanolb analytics [OPTIONS]
+
+Options:
+      --since <SINCE>    [default: 7d]
+      --view <VIEW>      [default: all]
+      --by <BY>          [default: account]
+      --bucket <BUCKET>  [default: day]
+      --limit <LIMIT>    [default: 10]
+  -h, --help             Print help

@@ -1,0 +1,9 @@
+$ nanolb accounts rm --help
+exit 0
+Usage: nanolb accounts rm <ID>
+
+Arguments:
+  <ID>  
+
+Options:
+  -h, --help  Print help

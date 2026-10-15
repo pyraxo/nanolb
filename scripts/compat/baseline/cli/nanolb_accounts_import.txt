@@ -1,0 +1,10 @@
+$ nanolb accounts import --help
+exit 0
+Usage: nanolb accounts import [OPTIONS] [PATH]
+
+Arguments:
+  [PATH]  
+
+Options:
+      --label <LABEL>  
+  -h, --help           Print help
