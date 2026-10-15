@@ -131,10 +131,7 @@ impl Conn {
                 Ok(Err(e)) => {
                     acc.fail(now_ms() + 15_000, format!("connect: {e}"));
                     self.tried.push(acc.id.clone());
-                    last = UpstreamError::Status {
-                        status: 502,
-                        message: format!("upstream websocket connect failed: {e}"),
-                    };
+                    last = UpstreamError::WsConnect(e);
                 }
                 Err(_) => {
                     acc.fail(now_ms() + 15_000, "websocket handshake timed out".into());

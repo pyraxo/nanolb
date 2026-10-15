@@ -5,7 +5,6 @@ use axum::extract::ws;
 use axum::http::{HeaderMap, header};
 use bytes::Bytes;
 use serde_json::{Value, json};
-use std::fmt::Display;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::handshake::client::Request;
 use tokio_tungstenite::tungstenite::protocol::CloseFrame;
@@ -23,19 +22,12 @@ pub(super) fn ws_url(http: &str) -> String {
     }
 }
 
-fn internal(e: &impl Display) -> UpstreamError {
-    UpstreamError::Status {
-        status: 500,
-        message: e.to_string(),
-    }
-}
-
 pub(super) fn handshake(app: &App, acc: &Account, client: &HeaderMap, url: Option<&str>) -> Result<Request, UpstreamError> {
     let built = codex::request(app, acc, reqwest::Method::GET, "/codex/responses", Some(client))
         .build()
-        .map_err(|e| internal(&e))?;
+        .map_err(UpstreamError::Handshake)?;
     let url = url.map_or_else(|| ws_url(built.url().as_str()), str::to_owned);
-    let mut req = url.into_client_request().map_err(|e| internal(&e))?;
+    let mut req = url.into_client_request().map_err(UpstreamError::HandshakeUrl)?;
     let hs = req.headers_mut();
     for (k, v) in built.headers() {
         if k != header::ACCEPT {

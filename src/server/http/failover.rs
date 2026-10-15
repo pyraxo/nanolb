@@ -49,7 +49,7 @@ pub(super) async fn send(
     up: &Value,
     session: &str,
 ) -> Result<Upstream, UpstreamError> {
-    let raw = serde_json::to_vec(up).map_err(|e| UpstreamError::Decode(e.to_string()))?;
+    let raw = serde_json::to_vec(up)?;
     let compress = provider == Provider::Codex && job.settings.compress_upstream;
     let (body, compressed) = match compress.then(|| zstd::encode_all(raw.as_slice(), 3)) {
         Some(Ok(c)) => (Bytes::from(c), true),

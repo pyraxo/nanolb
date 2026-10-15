@@ -7,6 +7,7 @@ use crate::time::now_ms;
 use axum::http::HeaderMap;
 use reqwest::StatusCode;
 use serde_json::{Value, json};
+use tokio_tungstenite::tungstenite;
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum UpstreamError {
@@ -20,6 +21,16 @@ pub(crate) enum UpstreamError {
     Status { status: u16, message: String },
     #[error("{0}")]
     FirstEvent(String),
+    #[error("upstream websocket connect failed: {0}")]
+    WsConnect(tungstenite::Error),
+    #[error("the account that owns this file is not available")]
+    FileOwnerGone,
+    #[error("build request: {0}")]
+    Build(reqwest::Error),
+    #[error("{0}")]
+    Handshake(reqwest::Error),
+    #[error("{0}")]
+    HandshakeUrl(tungstenite::Error),
     #[error("refresh: {0}")]
     RefreshSend(reqwest::Error),
     #[error("token refresh failed ({status}): {body}")]
@@ -42,6 +53,8 @@ pub(crate) enum UpstreamError {
     KeyRejected(StatusCode),
     #[error("{0}")]
     Decode(String),
+    #[error("{0}")]
+    Encode(#[from] serde_json::Error),
     #[error(transparent)]
     Http(#[from] reqwest::Error),
     #[error(transparent)]
@@ -55,6 +68,8 @@ impl UpstreamError {
         match self {
             Self::NoAccount => 503,
             Self::Timeout => 504,
+            Self::FileOwnerGone => 404,
+            Self::Build(_) | Self::Handshake(_) | Self::HandshakeUrl(_) => 500,
             Self::Status { status, .. } => *status,
             _ => 502,
         }

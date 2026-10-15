@@ -67,10 +67,7 @@ pub(super) async fn forward(app: &Arc<App>, key: &Key, c: &Call<'_>, shape: Shap
                     .get(id)
                     .filter(|a| key.cfg.accounts.is_empty() || key.cfg.accounts.contains(&a.id));
                 if acc.is_none() {
-                    last = UpstreamError::Status {
-                        status: 404,
-                        message: "the account that owns this file is not available".into(),
-                    };
+                    last = UpstreamError::FileOwnerGone;
                 }
                 acc
             }
@@ -84,10 +81,7 @@ pub(super) async fn forward(app: &Arc<App>, key: &Key, c: &Call<'_>, shape: Shap
         }
         let guard = acc.acquire();
         let rb = upstream::request(app, &acc, c.method.clone(), c.path, None);
-        let mut req = shape(rb).build().map_err(|e| UpstreamError::Status {
-            status: 500,
-            message: format!("build request: {e}"),
-        })?;
+        let mut req = shape(rb).build().map_err(UpstreamError::Build)?;
         req.headers_mut().insert(header::ACCEPT, HeaderValue::from_static(c.accept));
         let res = match tokio::time::timeout(first_timeout, app.http.execute(req)).await {
             Ok(Ok(r)) => r,
