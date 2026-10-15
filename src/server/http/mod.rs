@@ -127,10 +127,11 @@ async fn handle(app: Arc<App>, key: Arc<Key>, format: ApiFormat, h: HeaderMap, b
         format,
         model,
         started,
+        stream,
     };
     let client_headers = (format == ApiFormat::Responses).then_some(&h);
     let upstream = failover::send(&job, provider, client_headers, &up, &session)
         .await
         .map_err(|e| job.failed(provider, e))?;
-    relay::run(job, upstream, reply, stream).await
+    relay::run(job, upstream, reply).await
 }

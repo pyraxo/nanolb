@@ -1,25 +1,22 @@
-use super::failover::{Events, Upstream};
+mod pump;
+
+use super::failover::Upstream;
 use crate::app::{Account, App, Key, Provider, Settings};
 use crate::server::error::{ApiError, ApiFormat};
-use crate::sse;
 use crate::store::{Usage, UsageMeta};
 use crate::time::{now_ms, ts_iso};
 use crate::translate::{anthropic, chat};
 use crate::upstream::{UpstreamError, codex, limit_reset};
 use axum::Json;
-use axum::body::{Body, Bytes};
-use axum::http::{HeaderValue, header};
+use axum::body::Bytes;
 use axum::response::{IntoResponse, Response};
 use eventsource_stream::Event;
 use futures_util::StreamExt;
+use pump::relay;
 use serde_json::Value;
-use std::convert::Infallible;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::mpsc;
-use tokio::time::{Instant, timeout};
-
-const KEEPALIVE: &[u8] = b": keepalive\n\n";
+use tokio::time::{Instant, timeout_at};
 
 pub(super) enum Reply {
     Responses,
@@ -46,7 +43,7 @@ impl From<Reply> for Tx {
 impl Tx {
     fn emit(&mut self, ev: &Event, parsed: Option<&Value>, out: &mut Vec<Bytes>) {
         match (self, parsed) {
-            (Self::Pass, _) => out.push(sse::frame((ev.event != "message").then_some(ev.event.as_str()), &ev.data)),
+            (Self::Pass, _) => {}
             (Self::Chat(s), Some(v)) => s.event(v, out),
             (Self::Chat(s), None) => s.event_data(&ev.data, out),
             (Self::Anth(s), Some(v)) => s.event(v, out),
@@ -63,6 +60,13 @@ impl Tx {
     }
 }
 
+pub(super) fn tapped(event: &str) -> bool {
+    matches!(
+        event,
+        "response.completed" | "response.failed" | "response.incomplete" | "codex.rate_limits" | "error" | "message"
+    )
+}
+
 #[derive(Default)]
 struct Tap {
     response: Option<Value>,
@@ -71,10 +75,7 @@ struct Tap {
 
 impl Tap {
     fn observe(&mut self, ev: &Event, acc: &Account, collect: bool, parse_all: bool) -> Option<Value> {
-        let interesting = matches!(
-            ev.event.as_str(),
-            "response.completed" | "response.failed" | "response.incomplete" | "codex.rate_limits" | "error" | "message"
-        ) || (collect && ev.event == "response.output_item.done");
+        let interesting = tapped(&ev.event) || (collect && ev.event == "response.output_item.done");
         if !interesting && !parse_all {
             return None;
         }
@@ -103,9 +104,14 @@ pub(super) struct Job {
     pub(super) format: ApiFormat,
     pub(super) model: String,
     pub(super) started: i64,
+    pub(super) stream: bool,
 }
 
 impl Job {
+    pub(super) fn pass(&self) -> bool {
+        self.stream && self.format == ApiFormat::Responses
+    }
+
     fn idle(&self) -> Duration {
         Duration::from_secs(self.settings.idle_timeout_secs.max(30))
     }
@@ -149,8 +155,8 @@ impl Job {
     }
 }
 
-pub(super) async fn run(job: Job, up: Upstream, reply: Reply, stream: bool) -> Result<Response, ApiError> {
-    if stream {
+pub(super) async fn run(job: Job, up: Upstream, reply: Reply) -> Result<Response, ApiError> {
+    if job.stream {
         Ok(relay(job, up, reply.into()))
     } else {
         collect(job, up, reply).await
@@ -162,7 +168,8 @@ async fn collect(job: Job, up: Upstream, reply: Reply) -> Result<Response, ApiEr
         acc,
         guard,
         first,
-        mut events,
+        mut body,
+        mut sse,
         ttfb,
         headers,
     } = up;
@@ -170,8 +177,19 @@ async fn collect(job: Job, up: Upstream, reply: Reply) -> Result<Response, ApiEr
     let mut tap = Tap::default();
     tap.observe(&first, &acc, true, parse_all);
     let idle = job.idle();
-    while let Ok(Some(Ok(ev))) = timeout(idle, events.next()).await {
-        tap.observe(&ev, &acc, true, parse_all);
+    sse.take_dispatched();
+    let mut deadline = Instant::now() + idle;
+    loop {
+        while let Some(ev) = sse.pop() {
+            tap.observe(&ev, &acc, true, parse_all);
+        }
+        let Ok(Some(Ok(chunk))) = timeout_at(deadline, body.next()).await else {
+            break;
+        };
+        sse.feed(chunk);
+        if sse.take_dispatched() {
+            deadline = Instant::now() + idle;
+        }
     }
     drop(guard);
     job.finished(&acc, tap.response.as_ref(), ttfb);
@@ -198,112 +216,4 @@ async fn collect(job: Job, up: Upstream, reply: Reply) -> Result<Response, ApiEr
         res.headers_mut().extend(headers);
     }
     Ok(res)
-}
-
-struct Pump {
-    tx: Tx,
-    tap: Tap,
-    acc: Arc<Account>,
-    events: Events,
-    sender: mpsc::Sender<Bytes>,
-    out: Vec<Bytes>,
-}
-
-impl Pump {
-    fn on(&mut self, ev: &Event) {
-        let parsed = self.tap.observe(ev, &self.acc, false, false);
-        self.tx.emit(ev, parsed.as_ref(), &mut self.out);
-    }
-
-    async fn flush(&mut self) -> bool {
-        for b in self.out.drain(..) {
-            if self.sender.send(b).await.is_err() {
-                return false;
-            }
-        }
-        true
-    }
-
-    async fn pump(&mut self, first: &Event, idle: Duration, keepalive: Duration) -> bool {
-        self.on(first);
-        let mut last = Instant::now();
-        let tick = tokio::time::sleep_until(last + keepalive);
-        tokio::pin!(tick);
-        loop {
-            if !self.flush().await {
-                return false;
-            }
-            loop {
-                tokio::select! {
-                    biased;
-                    ev = self.events.next() => {
-                        let Some(Ok(ev)) = ev else { return true };
-                        self.on(&ev);
-                        last = Instant::now();
-                        break;
-                    }
-                    () = &mut tick => {
-                        let now = Instant::now();
-                        if now >= last + idle {
-                            return true;
-                        }
-                        if now < last + keepalive {
-                            tick.as_mut().reset(last + keepalive);
-                            continue;
-                        }
-                        if self.sender.send(Bytes::from_static(KEEPALIVE)).await.is_err() {
-                            return false;
-                        }
-                        tick.as_mut().reset(now + keepalive);
-                    }
-                }
-            }
-        }
-    }
-}
-
-fn relay(job: Job, up: Upstream, tx: Tx) -> Response {
-    let Upstream {
-        acc,
-        guard,
-        first,
-        events,
-        ttfb,
-        headers,
-    } = up;
-    let idle = job.idle();
-    let keepalive = match job.settings.keepalive_secs {
-        0 => idle,
-        k => Duration::from_secs(k).min(idle),
-    };
-    let pass = job.format == ApiFormat::Responses;
-    let (sender, rx) = mpsc::channel::<Bytes>(128);
-    let mut pump = Pump {
-        tx,
-        tap: Tap::default(),
-        acc,
-        events,
-        sender,
-        out: Vec::with_capacity(8),
-    };
-    tokio::spawn(async move {
-        let _guard = guard;
-        if pump.pump(&first, idle, keepalive).await {
-            pump.tx.finish(&mut pump.out);
-            pump.flush().await;
-        }
-        job.finished(&pump.acc, pump.tap.response.as_ref(), ttfb);
-    });
-    let body = Body::from_stream(futures_util::stream::unfold(rx, |mut rx| async move {
-        rx.recv().await.map(|b| (Ok::<_, Infallible>(b), rx))
-    }));
-    let mut res = Response::new(body);
-    let h = res.headers_mut();
-    h.insert(header::CONTENT_TYPE, HeaderValue::from_static("text/event-stream"));
-    h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
-    h.insert("x-accel-buffering", HeaderValue::from_static("no"));
-    if pass {
-        h.extend(headers);
-    }
-    res
 }

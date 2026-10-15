@@ -91,3 +91,57 @@ async fn stalled_stream_gets_keepalive_comments() {
     let ka = text.find(": keepalive\n\n").expect("keepalive comment");
     assert!(ka < text.find("\"delta\":\"hello\"").unwrap());
 }
+
+#[tokio::test]
+async fn split_events_reach_the_client_unchanged_and_record_usage() {
+    let raw = format!(": ping\n\n{SSE_OK}");
+    let cuts = [
+        raw.find("data:").unwrap() + 3,
+        raw.find("}}\n\n").unwrap() + 3,
+        raw.find("\"usage\"").unwrap(),
+        raw.len() - 1,
+        raw.len(),
+    ];
+    let mut at = 0;
+    let parts: Vec<String> = cuts
+        .into_iter()
+        .map(|c| {
+            let p = raw[at..c].to_owned();
+            at = c;
+            p
+        })
+        .collect();
+    let upstream = axum::Router::new().route(
+        "/codex/responses",
+        post(move || {
+            let parts = parts.clone();
+            async move {
+                axum::body::Body::from_stream(futures_util::stream::iter(parts).then(|p| async move {
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                    Ok::<_, std::convert::Infallible>(p)
+                }))
+            }
+        }),
+    );
+    let (h, key) = two_accounts(upstream, json!({})).await;
+    let res = reqwest::Client::new()
+        .post(format!("{}/v1/responses", h.url))
+        .bearer_auth(&key)
+        .json(&json!({"model": "gpt-5.4", "input": "hi", "stream": true}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.text().await.unwrap(), raw);
+    let mut row = json!(null);
+    for _ in 0..100 {
+        row = h.op("requests", json!({})).await[0].clone();
+        if !row.is_null() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert_eq!(
+        (&row["status"], &row["input"], &row["output"]),
+        (&json!(200), &json!(10), &json!(2))
+    );
+}

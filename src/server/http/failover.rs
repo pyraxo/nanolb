@@ -1,10 +1,11 @@
-use super::relay::Job;
+use super::relay::{Job, tapped};
 use crate::app::{Account, Inflight, Provider};
+use crate::sse::Splitter;
 use crate::time::now_ms;
 use crate::upstream::{self, Failure, UpstreamError, classify, codex};
 use axum::body::Bytes;
 use axum::http::{HeaderMap, HeaderValue, header};
-use eventsource_stream::{Event, EventStreamError, Eventsource};
+use eventsource_stream::Event;
 use futures_util::{Stream, StreamExt};
 use reqwest::{Method, RequestBuilder, Response};
 use serde_json::Value;
@@ -12,8 +13,9 @@ use std::cell::OnceCell;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::time::Instant;
 
-pub(super) type Events = Pin<Box<dyn Stream<Item = Result<Event, EventStreamError<reqwest::Error>>> + Send>>;
+pub(super) type Body = Pin<Box<dyn Stream<Item = reqwest::Result<Bytes>> + Send>>;
 
 const TURN_STATE: &str = "x-codex-turn-state";
 const PASS_HEADERS: [&str; 4] = ["x-request-id", "openai-model", "x-reasoning-included", "x-models-etag"];
@@ -22,7 +24,8 @@ pub(super) struct Upstream {
     pub(super) acc: Arc<Account>,
     pub(super) guard: Inflight,
     pub(super) first: Event,
-    pub(super) events: Events,
+    pub(super) body: Body,
+    pub(super) sse: Splitter,
     pub(super) ttfb: i64,
     pub(super) headers: HeaderMap,
 }
@@ -141,27 +144,38 @@ impl Attempt<'_> {
             return Err(rejected(acc, status, res).await);
         }
         let headers = self.headers(res.headers());
-        let mut events: Events = Box::pin(res.bytes_stream().eventsource());
-        match tokio::time::timeout(self.first_timeout, events.next()).await {
-            Ok(Some(Ok(ev))) if is_failure(&ev) => Err(failed_first(acc, &ev)),
-            Ok(Some(Ok(first))) => {
+        let mut body: Body = Box::pin(res.bytes_stream());
+        let pass = self.job.pass();
+        let mut sse = Splitter::new(if pass { tapped } else { |_| true }, pass);
+        match self.first_event(&mut body, &mut sse).await {
+            Ok(ev) if is_failure(&ev) => Err(failed_first(acc, &ev)),
+            Ok(first) => {
                 let ttfb = now_ms();
                 acc.observe(Some(ttfb - sent_at));
                 Ok(Upstream {
                     acc: Arc::clone(acc),
                     guard,
                     first,
-                    events,
+                    body,
+                    sse,
                     ttfb,
                     headers,
                 })
             }
-            other => {
-                let msg = match other {
-                    Err(_) => "timed out waiting for first event".to_owned(),
-                    Ok(e) => format!("upstream closed before first event: {:?}", e.and_then(Result::err)),
-                };
-                Err(cool(acc, 10_000, msg.clone(), UpstreamError::FirstEvent(msg)))
+            Err(msg) => Err(cool(acc, 10_000, msg.clone(), UpstreamError::FirstEvent(msg))),
+        }
+    }
+
+    async fn first_event(&self, body: &mut Body, sse: &mut Splitter) -> Result<Event, String> {
+        let deadline = Instant::now() + self.first_timeout;
+        loop {
+            if let Some(ev) = sse.pop() {
+                return Ok(ev);
+            }
+            match tokio::time::timeout_at(deadline, body.next()).await {
+                Ok(Some(Ok(chunk))) => sse.feed(chunk),
+                Ok(e) => return Err(format!("upstream closed before first event: {:?}", e.and_then(Result::err))),
+                Err(_) => return Err("timed out waiting for first event".to_owned()),
             }
         }
     }
