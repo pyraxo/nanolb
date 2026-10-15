@@ -22,9 +22,9 @@ struct Snapshot {
 }
 
 async fn fetch(client: &Client) -> Result<Snapshot, String> {
-    let status = client.call("status", json!({})).await?;
-    let usage = client.call("usage", json!({ "since": "24h" })).await?;
-    let requests = client.call("requests", json!({ "limit": 15 })).await?;
+    let status = client.call("status", json!({})).await.map_err(|e| e.to_string())?;
+    let usage = client.call("usage", json!({ "since": "24h" })).await.map_err(|e| e.to_string())?;
+    let requests = client.call("requests", json!({ "limit": 15 })).await.map_err(|e| e.to_string())?;
     let rows = usage.as_array().cloned().unwrap_or_default();
     Ok(Snapshot {
         accounts: status["accounts"].as_array().cloned().unwrap_or_default(),
@@ -154,10 +154,16 @@ async fn act(client: &Client, snap: &Snapshot, selected: Option<usize>, key: cha
     };
     if key == 'e' {
         let enabled = !a["enabled"].as_bool().unwrap_or(false);
-        client.call("account_update", json!({ "id": a["id"], "enabled": enabled })).await?;
+        client
+            .call("account_update", json!({ "id": a["id"], "enabled": enabled }))
+            .await
+            .map_err(|e| e.to_string())?;
         Ok(format!("enabled={enabled}"))
     } else {
-        let r = client.call("account_warmup", json!({ "id": a["id"] })).await?;
+        let r = client
+            .call("account_warmup", json!({ "id": a["id"] }))
+            .await
+            .map_err(|e| e.to_string())?;
         Ok(format!("warmup {}", r["status"]))
     }
 }

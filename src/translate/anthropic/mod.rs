@@ -1,6 +1,7 @@
 use bytes::Bytes;
 use serde_json::{Map, Value, json};
 
+use super::TranslateError;
 use crate::sse::frame;
 
 pub struct Opts {
@@ -147,13 +148,16 @@ fn effort(budget: Option<u64>) -> &'static str {
     }
 }
 
-pub fn to_responses(req: &Value, upstream_model: &str) -> Result<(Value, Opts), String> {
-    let msgs = req.get("messages").and_then(Value::as_array).ok_or("messages must be an array")?;
+pub fn to_responses(req: &Value, upstream_model: &str) -> Result<(Value, Opts), TranslateError> {
+    let msgs = req
+        .get("messages")
+        .and_then(Value::as_array)
+        .ok_or(TranslateError::MessagesNotArray)?;
     let mut input = Vec::with_capacity(msgs.len() + 2);
     for m in msgs {
         let role = str_of(m, "role");
         if role != "user" && role != "assistant" {
-            return Err(format!("invalid message role: {role:?}"));
+            return Err(TranslateError::InvalidRole(role.to_owned()));
         }
         match m.get("content") {
             Some(Value::String(s)) => {
@@ -163,7 +167,7 @@ pub fn to_responses(req: &Value, upstream_model: &str) -> Result<(Value, Opts), 
                 }
             }
             Some(Value::Array(blocks)) => convert_blocks(&mut input, role, blocks),
-            _ => return Err("message content must be a string or an array".into()),
+            _ => return Err(TranslateError::InvalidContent),
         }
     }
 

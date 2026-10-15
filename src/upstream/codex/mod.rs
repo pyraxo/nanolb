@@ -1,6 +1,7 @@
 use crate::app::{Account, AccountCfg, App, LoginState, Provider};
 use crate::store::{Endpoint, Usage, UsageMeta};
 use crate::time::{now_ms, ts_iso};
+use crate::upstream::UpstreamError;
 use axum::http::HeaderMap;
 use base64::Engine;
 use futures_util::StreamExt;
@@ -67,10 +68,10 @@ pub fn claims(jwt: &str) -> Claims {
     }
 }
 
-pub fn account_from_tokens(id_token: &str, access: &str, refresh: &str, label: Option<&str>) -> Result<AccountCfg, String> {
+pub fn account_from_tokens(id_token: &str, access: &str, refresh: &str, label: Option<&str>) -> Result<AccountCfg, UpstreamError> {
     let c = claims(id_token);
     if c.account_id.is_empty() {
-        return Err("id_token has no chatgpt_account_id claim".into());
+        return Err(UpstreamError::Decode("id_token has no chatgpt_account_id claim".into()));
     }
     let exp = claims(access).exp;
     Ok(AccountCfg {
@@ -92,17 +93,20 @@ pub fn account_from_tokens(id_token: &str, access: &str, refresh: &str, label: O
     })
 }
 
-pub fn account_from_auth_json(v: &Value, label: Option<&str>) -> Result<AccountCfg, String> {
+pub fn account_from_auth_json(v: &Value, label: Option<&str>) -> Result<AccountCfg, UpstreamError> {
     let v = match v {
-        Value::String(s) => serde_json::from_str(s).map_err(|e| format!("auth_json: {e}"))?,
+        Value::String(s) => serde_json::from_str(s).map_err(|e| UpstreamError::Decode(format!("auth_json: {e}")))?,
         v => v.clone(),
     };
     let t = &v["tokens"];
-    let get = |k: &str| t[k].as_str().ok_or_else(|| format!("auth_json.tokens.{k} missing"));
+    let get = |k: &str| {
+        t[k].as_str()
+            .ok_or_else(|| UpstreamError::Decode(format!("auth_json.tokens.{k} missing")))
+    };
     account_from_tokens(get("id_token")?, get("access_token")?, get("refresh_token")?, label)
 }
 
-pub async fn exchange_code(http: &reqwest::Client, code: &str, verifier: &str, redirect_uri: &str) -> Result<Value, String> {
+pub async fn exchange_code(http: &reqwest::Client, code: &str, verifier: &str, redirect_uri: &str) -> Result<Value, UpstreamError> {
     let res = http
         .post(format!("{ISSUER}/oauth/token"))
         .form(&[
@@ -113,27 +117,24 @@ pub async fn exchange_code(http: &reqwest::Client, code: &str, verifier: &str, r
             ("code_verifier", verifier),
         ])
         .send()
-        .await
-        .map_err(|e| e.to_string())?;
+        .await?;
     let status = res.status();
-    let body: Value = res.json().await.map_err(|e| e.to_string())?;
+    let body: Value = res.json().await?;
     if !status.is_success() {
-        return Err(format!("token exchange failed ({status}): {body}"));
+        return Err(UpstreamError::Exchange { status, body });
     }
     Ok(body)
 }
 
-pub async fn ensure_fresh(app: &Arc<App>, a: &Arc<Account>, force: bool) -> Result<(), String> {
+pub async fn ensure_fresh(app: &Arc<App>, a: &Arc<Account>, force: bool) -> Result<(), UpstreamError> {
     if a.provider() == Provider::OpenRouter {
         return Ok(());
     }
     let (app, a) = (app.clone(), a.clone());
-    tokio::spawn(async move { refresh_inner(&app, &a, force).await })
-        .await
-        .map_err(|e| e.to_string())?
+    tokio::spawn(async move { refresh_inner(&app, &a, force).await }).await?
 }
 
-async fn refresh_inner(app: &App, a: &Account, force: bool) -> Result<(), String> {
+async fn refresh_inner(app: &App, a: &Account, force: bool) -> Result<(), UpstreamError> {
     let stale = |a: &Account| {
         let c = a.cfg.read();
         force || c.expires_at - now_ms() < REFRESH_WINDOW_MS || now_ms() - c.last_refresh > 8 * 86_400_000
@@ -154,15 +155,18 @@ async fn refresh_inner(app: &App, a: &Account, force: bool) -> Result<(), String
         .json(&json!({"grant_type": "refresh_token", "client_id": CLIENT_ID, "refresh_token": refresh_token, "scope": "openid profile email"}))
         .send()
         .await
-        .map_err(|e| format!("refresh: {e}"))?;
+        .map_err(UpstreamError::RefreshSend)?;
     let status = res.status();
     let body: Value = res.json().await.unwrap_or_default();
     if !status.is_success() || body["access_token"].as_str().is_none() {
-        let msg = format!("token refresh failed ({status}): {}", body["error"]);
+        let err = UpstreamError::Refresh {
+            status,
+            body: body["error"].clone(),
+        };
         let permanent = status == 401 || status == 400;
         tracing::error!(account = %a.id, %status, permanent, "token refresh failed");
-        a.fail(now_ms() + if permanent { 3_600_000 } else { 30_000 }, msg.clone());
-        return Err(msg);
+        a.fail(now_ms() + if permanent { 3_600_000 } else { 30_000 }, err.to_string());
+        return Err(err);
     }
     {
         let mut c = a.cfg.write();
@@ -182,7 +186,7 @@ async fn refresh_inner(app: &App, a: &Account, force: bool) -> Result<(), String
         }
         c.last_refresh = now_ms();
     }
-    app.accounts.save(&app.store, a).map_err(|e| e.to_string())?;
+    app.accounts.save(&app.store, a)?;
     tracing::info!(account = %a.id, expires_at = %ts_iso(a.cfg.read().expires_at), "token refreshed");
     Ok(())
 }
@@ -302,15 +306,7 @@ pub fn apply_rate_event(a: &Account, ev: &Value) {
     apply_window(a, &rl["primary"], &rl["secondary"]);
 }
 
-pub fn limit_reset_from_error(body: &Value) -> Option<i64> {
-    let e = &body["error"];
-    e["resets_at"]
-        .as_i64()
-        .map(|s| s * 1000)
-        .or_else(|| e["resets_in_seconds"].as_i64().map(|s| now_ms() + s * 1000))
-}
-
-pub async fn fetch_usage(app: &App, a: &Account) -> Result<Value, String> {
+pub async fn fetch_usage(app: &App, a: &Account) -> Result<Value, UpstreamError> {
     let (token, acct) = {
         let c = a.cfg.read();
         (c.access_token.clone(), c.chatgpt_account_id.clone())
@@ -323,12 +319,11 @@ pub async fn fetch_usage(app: &App, a: &Account) -> Result<Value, String> {
         .header("accept", "application/json")
         .timeout(Duration::from_secs(10))
         .send()
-        .await
-        .map_err(|e| e.to_string())?;
+        .await?;
     if !res.status().is_success() {
-        return Err(format!("usage fetch: {}", res.status()));
+        return Err(UpstreamError::UsageFetch(res.status()));
     }
-    let v: Value = res.json().await.map_err(|e| e.to_string())?;
+    let v: Value = res.json().await?;
     apply_window(a, &v["rate_limit"]["primary_window"], &v["rate_limit"]["secondary_window"]);
     if let Some(p) = v["plan_type"].as_str() {
         a.cfg.write().plan = p.into();
@@ -336,15 +331,14 @@ pub async fn fetch_usage(app: &App, a: &Account) -> Result<Value, String> {
     Ok(v)
 }
 
-pub async fn fetch_models(app: &App, a: &Account) -> Result<(), String> {
+pub async fn fetch_models(app: &App, a: &Account) -> Result<(), UpstreamError> {
     let path = format!("/codex/models?client_version={}", app.settings().codex_version);
     let res = request(app, a, reqwest::Method::GET, &path, None)
         .header("accept", "application/json")
         .timeout(Duration::from_secs(10))
         .send()
-        .await
-        .map_err(|e| e.to_string())?;
-    let v: Value = res.json().await.map_err(|e| e.to_string())?;
+        .await?;
+    let v: Value = res.json().await?;
     let models: Vec<(String, u64)> = v["models"]
         .as_array()
         .into_iter()
@@ -368,7 +362,7 @@ pub async fn warmup(app: &Arc<App>, a: &Arc<Account>) -> Value {
     };
     let started = now_ms();
     if let Err(e) = ensure_fresh(app, a, false).await {
-        return json!({"ok": false, "error": e});
+        return json!({"ok": false, "error": e.to_string()});
     }
     let mut body = json!({
         "model": model, "instructions": "Reply with OK only.",
@@ -419,23 +413,25 @@ pub async fn warmup(app: &Arc<App>, a: &Arc<Account>) -> Value {
     json!({"ok": true, "status": status, "at": ts_iso(now_ms()), "usage": usage})
 }
 
-pub async fn device_login_start(app: Arc<App>, label: Option<String>) -> Result<Value, String> {
+pub async fn device_login_start(app: Arc<App>, label: Option<String>) -> Result<Value, UpstreamError> {
     let res = app
         .http
         .post(format!("{ISSUER}/api/accounts/deviceauth/usercode"))
         .json(&json!({"client_id": CLIENT_ID}))
         .send()
-        .await
-        .map_err(|e| e.to_string())?;
+        .await?;
     if res.status() == 404 {
-        return Err("device code login is not enabled for this ChatGPT workspace; use `nanolb login --browser` or import auth.json".into());
+        return Err(UpstreamError::DeviceLoginDisabled);
     }
-    let v: Value = res.json().await.map_err(|e| e.to_string())?;
-    let device_id = v["device_auth_id"].as_str().ok_or("no device_auth_id")?.to_string();
+    let v: Value = res.json().await?;
+    let device_id = v["device_auth_id"]
+        .as_str()
+        .ok_or_else(|| UpstreamError::Decode("no device_auth_id".into()))?
+        .to_string();
     let user_code = v["user_code"]
         .as_str()
         .or(v["usercode"].as_str())
-        .ok_or("no user_code")?
+        .ok_or_else(|| UpstreamError::Decode("no user_code".into()))?
         .to_string();
     let interval = v["interval"]
         .as_str()
@@ -455,7 +451,7 @@ pub async fn device_login_start(app: Arc<App>, label: Option<String>) -> Result<
             }
             Err(e) => {
                 tracing::warn!(error = %e, "device login failed");
-                LoginState::Error { error: e }
+                LoginState::Error { error: e.to_string() }
             }
         };
         app2.logins.set(id2, state);
@@ -473,7 +469,7 @@ async fn poll_device(
     interval: u64,
     expires: i64,
     label: Option<&str>,
-) -> Result<Arc<Account>, String> {
+) -> Result<Arc<Account>, UpstreamError> {
     while now_ms() < expires {
         tokio::time::sleep(Duration::from_secs(interval.max(2))).await;
         let Ok(res) = app
@@ -489,17 +485,21 @@ async fn poll_device(
             continue;
         }
         if !res.status().is_success() {
-            return Err(format!("device token poll failed: {}", res.status()));
+            return Err(UpstreamError::DevicePoll(res.status()));
         }
-        let v: Value = res.json().await.map_err(|e| e.to_string())?;
-        let code = v["authorization_code"].as_str().ok_or("no authorization_code")?;
-        let verifier = v["code_verifier"].as_str().ok_or("no code_verifier")?;
+        let v: Value = res.json().await?;
+        let code = v["authorization_code"]
+            .as_str()
+            .ok_or_else(|| UpstreamError::Decode("no authorization_code".into()))?;
+        let verifier = v["code_verifier"]
+            .as_str()
+            .ok_or_else(|| UpstreamError::Decode("no code_verifier".into()))?;
         let t = exchange_code(&app.http, code, verifier, &format!("{ISSUER}/deviceauth/callback")).await?;
         let s = |k: &str| t[k].as_str().unwrap_or_default().to_string();
         let cfg = account_from_tokens(&s("id_token"), &s("access_token"), &s("refresh_token"), label)?;
-        return app.accounts.add(&app.store, cfg).map_err(|e| e.to_string());
+        return Ok(app.accounts.add(&app.store, cfg)?);
     }
-    Err("device login expired".into())
+    Err(UpstreamError::DeviceExpired)
 }
 
 pub fn spawn_background(app: Arc<App>) {
@@ -517,7 +517,7 @@ pub fn spawn_background(app: Arc<App>) {
                     && let Err(e) = fetch_usage(&a1, a).await
                 {
                     tracing::warn!(account = %a.id, error = %e, "usage poll failed");
-                    *a.last_error.lock() = Some((now_ms(), e));
+                    *a.last_error.lock() = Some((now_ms(), e.to_string()));
                 }
             }
             a1.persist_runtime();
@@ -570,7 +570,7 @@ pub fn warmup_due(cron: &str, last_fired: i64, now: chrono::DateTime<chrono::Loc
     c.find_next_occurrence(&since, false).is_ok_and(|t| t <= now)
 }
 
-pub async fn wham(app: &App, a: &Account, method: reqwest::Method, path: &str, body: Option<Value>) -> Result<Value, String> {
+pub async fn wham(app: &App, a: &Account, method: reqwest::Method, path: &str, body: Option<Value>) -> Result<Value, UpstreamError> {
     let (token, acct) = {
         let c = a.cfg.read();
         (c.access_token.clone(), c.chatgpt_account_id.clone())
@@ -585,11 +585,18 @@ pub async fn wham(app: &App, a: &Account, method: reqwest::Method, path: &str, b
     if let Some(b) = body {
         rb = rb.json(&b);
     }
-    let res = rb.send().await.map_err(|e| e.to_string())?;
+    let res = rb.send().await?;
     let status = res.status();
-    let text = res.text().await.map_err(|e| e.to_string())?;
+    let text = res.text().await?;
     if !status.is_success() {
-        return Err(format!("wham/{path} {status}: {text}"));
+        return Err(UpstreamError::Wham {
+            path: path.to_owned(),
+            status,
+            body: text,
+        });
     }
-    serde_json::from_str(&text).map_err(|e| format!("wham/{path}: invalid json: {e}"))
+    serde_json::from_str(&text).map_err(|source| UpstreamError::WhamJson {
+        path: path.to_owned(),
+        source,
+    })
 }

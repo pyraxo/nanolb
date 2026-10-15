@@ -1,6 +1,5 @@
-use std::sync::{Arc, LazyLock};
-
-use futures::future::BoxFuture;
+use crate::app::App;
+use crate::control::admin::{AdminError, dispatch};
 use rmcp::{
     ErrorData, RoleServer, ServerHandler, ServiceExt,
     model::{
@@ -14,8 +13,31 @@ use rmcp::{
     },
 };
 use serde_json::{Value, json};
+use std::fmt::Display;
+use std::future::Future;
+use std::sync::{Arc, LazyLock};
 
-pub type Exec = Arc<dyn Fn(String, Value) -> BoxFuture<'static, Result<Value, String>> + Send + Sync>;
+pub(crate) trait Backend: Clone + Send + Sync + 'static {
+    type Error: Display + Send;
+
+    fn call(&self, op: String, args: Value) -> impl Future<Output = Result<Value, Self::Error>> + Send;
+}
+
+impl Backend for Arc<App> {
+    type Error = AdminError;
+
+    async fn call(&self, op: String, args: Value) -> Result<Value, AdminError> {
+        dispatch(self, &op, args).await
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum ServeError {
+    #[error(transparent)]
+    Init(#[from] rmcp::service::ServerInitializeError),
+    #[error(transparent)]
+    Join(#[from] tokio::task::JoinError),
+}
 
 fn schema(properties: Value, required: &[&str]) -> Value {
     json!({"type": "object", "properties": properties, "required": required})
@@ -273,11 +295,11 @@ static TOOLS: LazyLock<Vec<Tool>> = LazyLock::new(|| {
 });
 
 #[derive(Clone)]
-struct Handler {
-    exec: Exec,
+pub(crate) struct Handler<B> {
+    backend: B,
 }
 
-impl ServerHandler for Handler {
+impl<B: Backend> ServerHandler for Handler<B> {
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             .with_instructions("Admin tools for the nanolb LLM load balancer: manage accounts, API keys, routing settings and usage.")
@@ -289,28 +311,22 @@ impl ServerHandler for Handler {
 
     async fn call_tool(&self, request: CallToolRequestParams, _: RequestContext<RoleServer>) -> Result<CallToolResponse, ErrorData> {
         let args = Value::Object(request.arguments.unwrap_or_default());
-        let result = match (self.exec)(request.name.into_owned(), args).await {
+        let result = match self.backend.call(request.name.into_owned(), args).await {
             Ok(value) => CallToolResult::success(vec![ContentBlock::text(serde_json::to_string_pretty(&value).unwrap_or_default())]),
-            Err(message) => CallToolResult::error(vec![ContentBlock::text(message)]),
+            Err(e) => CallToolResult::error(vec![ContentBlock::text(e.to_string())]),
         };
         Ok(result.into())
     }
 }
 
-pub async fn serve_stdio(exec: Exec) -> Result<(), String> {
-    Handler { exec }
-        .serve(stdio())
-        .await
-        .map_err(|e| e.to_string())?
-        .waiting()
-        .await
-        .map_err(|e| e.to_string())?;
+pub(crate) async fn serve_stdio<B: Backend>(backend: B) -> Result<(), ServeError> {
+    Handler { backend }.serve(stdio()).await?.waiting().await?;
     Ok(())
 }
 
-pub fn http_service(exec: Exec) -> StreamableHttpService<impl ServerHandler, NeverSessionManager> {
+pub(crate) fn http_service<B: Backend>(backend: B) -> StreamableHttpService<Handler<B>, NeverSessionManager> {
     StreamableHttpService::new(
-        move || Ok(Handler { exec: exec.clone() }),
+        move || Ok(Handler { backend: backend.clone() }),
         Arc::new(NeverSessionManager::default()),
         StreamableHttpServerConfig::default()
             .with_legacy_session_mode(false)

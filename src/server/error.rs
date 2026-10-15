@@ -1,7 +1,8 @@
-use crate::app::Provider;
+use crate::app::{KeyRejected, Provider};
 use crate::store::Endpoint;
 use crate::time::{now_ms, ts_iso};
-use crate::translate::anthropic;
+use crate::translate::{TranslateError, anthropic};
+use crate::upstream::UpstreamError;
 use axum::Json;
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
@@ -82,5 +83,23 @@ impl IntoResponse for ApiError {
             res.headers_mut().insert(header::RETRY_AFTER, HeaderValue::from(secs));
         }
         res
+    }
+}
+
+impl From<(ApiFormat, UpstreamError)> for ApiError {
+    fn from((format, e): (ApiFormat, UpstreamError)) -> Self {
+        Self::new(format, e.status(), e.to_string())
+    }
+}
+
+impl From<(ApiFormat, TranslateError)> for ApiError {
+    fn from((format, e): (ApiFormat, TranslateError)) -> Self {
+        Self::new(format, 400, e.to_string())
+    }
+}
+
+impl From<(ApiFormat, KeyRejected)> for ApiError {
+    fn from((format, e): (ApiFormat, KeyRejected)) -> Self {
+        Self::new(format, 429, e.to_string())
     }
 }

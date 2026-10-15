@@ -2,6 +2,7 @@ pub(crate) mod client;
 mod service;
 mod tui;
 
+use anyhow::anyhow;
 use clap::{Args, Parser, Subcommand};
 use client::Client;
 use oauth2::{AuthUrl, ClientId, CsrfToken, PkceCodeChallenge, RedirectUrl, Scope, TokenUrl, basic::BasicClient};
@@ -16,13 +17,13 @@ const REDIRECT_URI: &str = "http://localhost:1455/auth/callback";
 
 #[derive(Parser)]
 #[command(name = "nanolb", version, about)]
-pub struct Cli {
+pub(crate) struct Cli {
     #[command(subcommand)]
-    pub cmd: Cmd,
+    pub(crate) cmd: Cmd,
 }
 
 #[derive(Subcommand)]
-pub enum Cmd {
+pub(crate) enum Cmd {
     Serve {
         #[arg(long, env = "NANOLB_HOST", default_value = "127.0.0.1")]
         host: String,
@@ -114,7 +115,7 @@ pub enum Cmd {
 }
 
 #[derive(Subcommand)]
-pub enum ServiceCmd {
+pub(crate) enum ServiceCmd {
     Install {
         #[arg(long, env = "NANOLB_HOST", default_value = "127.0.0.1")]
         host: String,
@@ -128,7 +129,7 @@ pub enum ServiceCmd {
 }
 
 #[derive(Subcommand)]
-pub enum AccountsCmd {
+pub(crate) enum AccountsCmd {
     Ls,
     Import {
         path: Option<PathBuf>,
@@ -173,7 +174,7 @@ pub enum AccountsCmd {
 }
 
 #[derive(Args)]
-pub struct KeyOpts {
+pub(crate) struct KeyOpts {
     #[arg(long = "account")]
     accounts: Vec<String>,
     #[arg(long = "model")]
@@ -185,7 +186,7 @@ pub struct KeyOpts {
 }
 
 #[derive(Subcommand)]
-pub enum KeysCmd {
+pub(crate) enum KeysCmd {
     Ls,
     Create {
         name: String,
@@ -209,7 +210,7 @@ pub enum KeysCmd {
 }
 
 #[derive(Subcommand)]
-pub enum ResetCreditsCmd {
+pub(crate) enum ResetCreditsCmd {
     Ls {
         account: String,
     },
@@ -221,7 +222,7 @@ pub enum ResetCreditsCmd {
 }
 
 #[derive(Subcommand)]
-pub enum SessionsCmd {
+pub(crate) enum SessionsCmd {
     Ls {
         #[arg(long)]
         key: Option<String>,
@@ -244,7 +245,7 @@ pub enum SessionsCmd {
 }
 
 #[derive(Subcommand)]
-pub enum SettingsCmd {
+pub(crate) enum SettingsCmd {
     Get,
     Set { key: String, value: String },
 }
@@ -253,8 +254,8 @@ fn id(s: &str) -> Value {
     serde_json::from_str(s).unwrap_or_else(|_| json!(s))
 }
 
-fn parse_limit(s: &str) -> Result<Value, String> {
-    let bad = || format!("invalid limit '{s}', expected WINDOW:KIND:VALUE");
+fn parse_limit(s: &str) -> anyhow::Result<Value> {
+    let bad = || anyhow!("invalid limit '{s}', expected WINDOW:KIND:VALUE");
     let [window, kind, value] = s.split(':').collect::<Vec<_>>()[..] else {
         return Err(bad());
     };
@@ -268,7 +269,7 @@ fn parse_limit(s: &str) -> Result<Value, String> {
 }
 
 impl KeyOpts {
-    fn fill(self, args: &mut Map<String, Value>) -> Result<(), String> {
+    fn fill(self, args: &mut Map<String, Value>) -> anyhow::Result<()> {
         if !self.accounts.is_empty() {
             args.insert("accounts".into(), self.accounts.iter().map(|a| id(a)).collect());
         }
@@ -290,7 +291,7 @@ fn print(v: &Value) {
     println!("{}", serde_json::to_string_pretty(v).unwrap_or_default());
 }
 
-async fn show(c: &Client, op: &str, args: Value) -> Result<(), String> {
+async fn show(c: &Client, op: &str, args: Value) -> anyhow::Result<()> {
     print(&c.call(op, args).await?);
     Ok(())
 }
@@ -300,16 +301,11 @@ pub async fn run() -> ExitCode {
     let res = match args.cmd {
         Cmd::Serve { host, port } => {
             init_tracing();
-            crate::server::serve(host, port).await.map_err(|e| e.to_string())
+            crate::server::serve(host, port).await
         }
-        Cmd::Mcp => {
-            let client = Arc::new(Client::from_env());
-            let exec: crate::control::mcp::Exec = Arc::new(move |op, args| {
-                let c = client.clone();
-                Box::pin(async move { c.call(&op, args).await })
-            });
-            crate::control::mcp::serve_stdio(exec).await
-        }
+        Cmd::Mcp => crate::control::mcp::serve_stdio(Client::from_env())
+            .await
+            .map_err(anyhow::Error::from),
         cmd => dispatch(cmd).await,
     };
     match res {
@@ -334,7 +330,7 @@ fn init_tracing() {
     }
 }
 
-async fn dispatch(cmd: Cmd) -> Result<(), String> {
+async fn dispatch(cmd: Cmd) -> anyhow::Result<()> {
     let c = Client::from_env();
     match cmd {
         Cmd::Serve { .. } | Cmd::Mcp => Ok(()),
@@ -417,7 +413,7 @@ async fn dispatch(cmd: Cmd) -> Result<(), String> {
         },
         Cmd::Call { op, json } => {
             let args = match json {
-                Some(j) => serde_json::from_str(&j).map_err(|e| format!("invalid JSON: {e}"))?,
+                Some(j) => serde_json::from_str(&j).map_err(|e| anyhow!("invalid JSON: {e}"))?,
                 None => json!({}),
             };
             show(&c, &op, args).await
@@ -426,16 +422,16 @@ async fn dispatch(cmd: Cmd) -> Result<(), String> {
             codex_config(&c.url, key);
             Ok(())
         }
-        Cmd::Top { interval } => crate::cli::tui::run(c, interval).await,
+        Cmd::Top { interval } => tui::run(c, interval).await.map_err(anyhow::Error::msg),
     }
 }
 
-async fn accounts(c: &Client, cmd: AccountsCmd) -> Result<(), String> {
+async fn accounts(c: &Client, cmd: AccountsCmd) -> anyhow::Result<()> {
     match cmd {
         AccountsCmd::Ls => show(c, "accounts_list", json!({})).await,
         AccountsCmd::Import { path, label } => {
             let path = path.unwrap_or_else(|| PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".codex/auth.json"));
-            let auth_json = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+            let auth_json = std::fs::read_to_string(&path).map_err(|e| anyhow!("{}: {e}", path.display()))?;
             show(c, "account_import", json!({ "auth_json": auth_json, "label": label })).await
         }
         AccountsCmd::AddOpenrouter { api_key, label } => {
@@ -460,7 +456,7 @@ async fn accounts(c: &Client, cmd: AccountsCmd) -> Result<(), String> {
     }
 }
 
-async fn keys(c: &Client, cmd: KeysCmd) -> Result<(), String> {
+async fn keys(c: &Client, cmd: KeysCmd) -> anyhow::Result<()> {
     match cmd {
         KeysCmd::Ls => show(c, "keys_list", json!({})).await,
         KeysCmd::Create { name, opts } => {
@@ -481,7 +477,7 @@ async fn keys(c: &Client, cmd: KeysCmd) -> Result<(), String> {
     }
 }
 
-async fn login_device(c: &Client, label: Option<String>) -> Result<Value, String> {
+async fn login_device(c: &Client, label: Option<String>) -> anyhow::Result<Value> {
     let start = c.call("login_start", json!({ "label": label })).await?;
     eprintln!(
         "Open {} and enter code {}",
@@ -493,7 +489,7 @@ async fn login_device(c: &Client, label: Option<String>) -> Result<Value, String
         let poll = c.call("login_poll", json!({ "login_id": start["login_id"] })).await?;
         match poll["status"].as_str() {
             Some("done") => return Ok(poll["account"].clone()),
-            Some("error") => return Err(poll["error"].as_str().unwrap_or("login failed").to_string()),
+            Some("error") => return Err(anyhow!("{}", poll["error"].as_str().unwrap_or("login failed"))),
             _ => {}
         }
     }
@@ -510,28 +506,24 @@ fn running_pid() -> Option<u32> {
         .then_some(pid)
 }
 
-async fn up(c: &Client, host: String, port: u16) -> Result<(), String> {
+async fn up(c: &Client, host: String, port: u16) -> anyhow::Result<()> {
     if let Some(pid) = running_pid() {
         print(&json!({ "status": "already running", "pid": pid, "url": c.url }));
         return Ok(());
     }
     let home = crate::home::home();
-    std::fs::create_dir_all(&home).map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&home)?;
     let log_path = home.join("nanolb.log");
-    let log = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log_path)
-        .map_err(|e| e.to_string())?;
-    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let log = std::fs::OpenOptions::new().create(true).append(true).open(&log_path)?;
+    let exe = std::env::current_exe()?;
     let mut cmd = std::process::Command::new(exe);
     cmd.args(["serve", "--host", &host, "--port", &port.to_string()])
         .stdin(std::process::Stdio::null())
-        .stdout(log.try_clone().map_err(|e| e.to_string())?)
+        .stdout(log.try_clone()?)
         .stderr(log);
     #[cfg(unix)]
     std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
-    let child = cmd.spawn().map_err(|e| e.to_string())?;
+    let child = cmd.spawn()?;
     let url = format!("http://{host}:{port}");
     let http = reqwest::Client::new();
     for _ in 0..50 {
@@ -546,16 +538,16 @@ async fn up(c: &Client, host: String, port: u16) -> Result<(), String> {
             return Ok(());
         }
     }
-    Err(format!("nanolb did not become healthy within 5s; see {}", log_path.display()))
+    Err(anyhow!("nanolb did not become healthy within 5s; see {}", log_path.display()))
 }
 
-async fn service(cmd: ServiceCmd) -> Result<(), String> {
+async fn service(cmd: ServiceCmd) -> anyhow::Result<()> {
     match cmd {
         ServiceCmd::Install { host, port } => {
             if running_pid().is_some() {
                 down().await?;
             }
-            let res = crate::cli::service::install(&host, port)?;
+            let res = service::install(&host, port).map_err(anyhow::Error::msg)?;
             let http = reqwest::Client::new();
             for _ in 0..50 {
                 tokio::time::sleep(Duration::from_millis(100)).await;
@@ -569,24 +561,21 @@ async fn service(cmd: ServiceCmd) -> Result<(), String> {
                     return Ok(());
                 }
             }
-            Err(format!("service installed but not healthy within 5s: {res}"))
+            Err(anyhow!("service installed but not healthy within 5s: {res}"))
         }
         ServiceCmd::Uninstall { purge } => {
-            print(&crate::cli::service::uninstall(purge)?);
+            print(&service::uninstall(purge).map_err(anyhow::Error::msg)?);
             Ok(())
         }
     }
 }
 
-async fn down() -> Result<(), String> {
+async fn down() -> anyhow::Result<()> {
     let Some(pid) = running_pid() else {
         print(&json!({ "status": "not running" }));
         return Ok(());
     };
-    std::process::Command::new("kill")
-        .args(["-INT", &pid.to_string()])
-        .status()
-        .map_err(|e| e.to_string())?;
+    std::process::Command::new("kill").args(["-INT", &pid.to_string()]).status()?;
     for _ in 0..100 {
         tokio::time::sleep(Duration::from_millis(100)).await;
         if running_pid().is_none() {
@@ -594,7 +583,7 @@ async fn down() -> Result<(), String> {
             return Ok(());
         }
     }
-    Err(format!("nanolb (pid {pid}) did not stop within 10s"))
+    Err(anyhow!("nanolb (pid {pid}) did not stop within 10s"))
 }
 
 type CallbackTx = Arc<mpsc::Sender<HashMap<String, String>>>;
@@ -607,11 +596,11 @@ async fn callback(
     "Login complete. You can close this tab."
 }
 
-async fn login_browser(c: &Client, label: Option<String>) -> Result<Value, String> {
+async fn login_browser(c: &Client, label: Option<String>) -> anyhow::Result<Value> {
     let oauth = BasicClient::new(ClientId::new(CLIENT_ID.into()))
-        .set_auth_uri(AuthUrl::new(AUTHORIZE_URL.into()).map_err(|e| e.to_string())?)
-        .set_token_uri(TokenUrl::new(TOKEN_URL.into()).map_err(|e| e.to_string())?)
-        .set_redirect_uri(RedirectUrl::new(REDIRECT_URI.into()).map_err(|e| e.to_string())?);
+        .set_auth_uri(AuthUrl::new(AUTHORIZE_URL.into())?)
+        .set_token_uri(TokenUrl::new(TOKEN_URL.into())?)
+        .set_redirect_uri(RedirectUrl::new(REDIRECT_URI.into())?);
     let (challenge, verifier) = PkceCodeChallenge::new_random_sha256();
     let mut req = oauth.authorize_url(CsrfToken::new_random).set_pkce_challenge(challenge);
     for scope in ["openid", "profile", "email", "offline_access"] {
@@ -626,7 +615,7 @@ async fn login_browser(c: &Client, label: Option<String>) -> Result<Value, Strin
     let (tx, mut rx) = mpsc::channel(1);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:1455")
         .await
-        .map_err(|e| format!("cannot bind 127.0.0.1:1455: {e}"))?;
+        .map_err(|e| anyhow!("cannot bind 127.0.0.1:1455: {e}"))?;
     let app = axum::Router::new()
         .route("/auth/callback", axum::routing::get(callback))
         .with_state(Arc::new(tx));
@@ -636,13 +625,15 @@ async fn login_browser(c: &Client, label: Option<String>) -> Result<Value, Strin
     let _ = open::that(url.as_str());
     let params = tokio::time::timeout(Duration::from_secs(300), rx.recv()).await;
     server.abort();
-    let params = params.map_err(|_| "login timed out".to_string())?.ok_or("callback closed")?;
+    let params = params
+        .map_err(|_| anyhow!("login timed out"))?
+        .ok_or_else(|| anyhow!("callback closed"))?;
     if params.get("state").map(String::as_str) != Some(state.secret().as_str()) {
-        return Err("state mismatch".into());
+        return Err(anyhow!("state mismatch"));
     }
     let code = params
         .get("code")
-        .ok_or_else(|| params.get("error").cloned().unwrap_or("missing code".into()))?;
+        .ok_or_else(|| anyhow!("{}", params.get("error").map_or("missing code", String::as_str)))?;
 
     let tokens: Value = reqwest::Client::new()
         .post(TOKEN_URL)
@@ -656,11 +647,10 @@ async fn login_browser(c: &Client, label: Option<String>) -> Result<Value, Strin
         .send()
         .await
         .and_then(|r| r.error_for_status())
-        .map_err(|e| format!("token exchange failed: {e}"))?
+        .map_err(|e| anyhow!("token exchange failed: {e}"))?
         .json()
-        .await
-        .map_err(|e| e.to_string())?;
-    c.call(
+        .await?;
+    Ok(c.call(
         "account_add_tokens",
         json!({
             "id_token": tokens["id_token"],
@@ -669,7 +659,7 @@ async fn login_browser(c: &Client, label: Option<String>) -> Result<Value, Strin
             "label": label,
         }),
     )
-    .await
+    .await?)
 }
 
 fn codex_config(url: &str, key: Option<String>) {

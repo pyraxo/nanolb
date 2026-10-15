@@ -3,7 +3,7 @@ use crate::server::auth::api_key;
 use crate::server::error::{ApiError, ApiFormat};
 use crate::store::{Endpoint, Usage, UsageMeta};
 use crate::time::now_ms;
-use crate::upstream::codex;
+use crate::upstream::{self, codex};
 use axum::Router;
 use axum::extract::ws::{self, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, RawQuery, State};
@@ -112,7 +112,7 @@ fn pass_headers(src: &HeaderMap) -> HeaderMap {
 
 fn retry_until(status: u16, err: &Value) -> Option<i64> {
     let code = err["code"].as_str().or(err["type"].as_str()).unwrap_or_default();
-    let reset = codex::limit_reset_from_error(&json!({ "error": err }));
+    let reset = upstream::limit_reset_from_error(&json!({ "error": err }));
     match status {
         429 => Some(reset.unwrap_or(now_ms() + 60_000)),
         401 => Some(now_ms() + 300_000),
@@ -190,7 +190,7 @@ impl Conn {
             };
             if let Err(e) = codex::ensure_fresh(&self.app, &acc, false).await {
                 self.tried.push(acc.id.clone());
-                last = Fail(502, e);
+                last = Fail(502, e.to_string());
                 continue;
             }
             let mut req = match handshake(&self.app, &acc, &self.h, None) {
@@ -520,7 +520,7 @@ impl Conn {
                         _ => 502,
                     };
                     if kind == "response.failed"
-                        && let Some(reset) = codex::limit_reset_from_error(&json!({"error": resp["error"]}))
+                        && let Some(reset) = upstream::limit_reset_from_error(&json!({"error": resp["error"]}))
                     {
                         self.cool(reset, resp["error"]["message"].as_str().unwrap_or("rate limited"));
                     }
@@ -669,7 +669,7 @@ async fn calls(app: Arc<App>, h: HeaderMap, target: String, body: Bytes) -> Resp
         };
         tried.push(acc.id.clone());
         if let Err(e) = codex::ensure_fresh(&app, &acc, false).await {
-            last = Fail(502, e);
+            last = Fail(502, e.to_string());
             continue;
         }
         let mut rb = codex::request(&app, &acc, reqwest::Method::POST, "/codex/realtime/calls", Some(&h))
@@ -781,7 +781,7 @@ async fn live(app: Arc<App>, h: HeaderMap, ws: WebSocketUpgrade, call_id: Option
         };
         tried.push(acc.id.clone());
         if let Err(e) = codex::ensure_fresh(&app, &acc, false).await {
-            last = Fail(502, e);
+            last = Fail(502, e.to_string());
             continue;
         }
         let mut req = match handshake(&app, &acc, &h, Some(&ws_url(&target))) {

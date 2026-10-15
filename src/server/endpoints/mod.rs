@@ -3,7 +3,7 @@ use crate::server::auth::api_key;
 use crate::server::error::{ApiError, ApiFormat};
 use crate::store::{Endpoint, Usage, UsageMeta};
 use crate::time::now_ms;
-use crate::upstream::codex;
+use crate::upstream::{self, codex};
 use axum::Router;
 use axum::body::{Body, Bytes};
 use axum::extract::{Multipart, Path, State};
@@ -43,7 +43,7 @@ pub fn routes() -> Router<Arc<App>> {
 fn prelude(app: &App, h: &HeaderMap) -> Result<Arc<Key>, Box<Response>> {
     let key = api_key(app, h).ok_or_else(|| Box::new(ApiError::new(ApiFormat::Chat, 401, "invalid or missing api key").into_response()))?;
     key.check(now_ms())
-        .map_err(|e| Box::new(ApiError::new(ApiFormat::Chat, 429, e.to_string()).into_response()))?;
+        .map_err(|e| Box::new(ApiError::from((ApiFormat::Chat, e)).into_response()))?;
     Ok(key)
 }
 
@@ -102,19 +102,11 @@ async fn forward(app: &Arc<App>, key: &Key, c: &Call<'_>, shape: Shape<'_>) -> R
         let Some(acc) = acc else { break };
         if let Err(e) = codex::ensure_fresh(app, &acc, false).await {
             tried.push(acc.id.clone());
-            last = (502, e);
+            last = (502, e.to_string());
             continue;
         }
         let guard = acc.acquire();
-        let rb = if c.provider == Provider::OpenRouter {
-            app.http
-                .request(c.method.clone(), format!("{}{}", app.settings().openrouter_base, c.path))
-                .bearer_auth(&acc.cfg.read().access_token)
-                .header("http-referer", "https://github.com/pyraxo/nanolb")
-                .header("x-title", "nanolb")
-        } else {
-            codex::request(app, &acc, c.method.clone(), c.path, None)
-        };
+        let rb = upstream::request(app, &acc, c.method.clone(), c.path, None);
         let mut req = match shape(rb).build() {
             Ok(r) => r,
             Err(e) => return Err((500, format!("build request: {e}"))),
@@ -153,7 +145,7 @@ async fn forward(app: &Arc<App>, key: &Key, c: &Call<'_>, shape: Shape<'_>) -> R
                 .or(v["detail"].as_str())
                 .map_or_else(|| text.chars().take(500).collect(), str::to_string);
             let until = match status {
-                429 => codex::limit_reset_from_error(&v).unwrap_or(now_ms() + 60_000),
+                429 => upstream::limit_reset_from_error(&v).unwrap_or(now_ms() + 60_000),
                 401 => now_ms() + 300_000,
                 403 => 0,
                 _ => now_ms() + 5_000,
@@ -819,7 +811,8 @@ async fn embeddings(State(app): State<Arc<App>>, h: HeaderMap, body: Bytes) -> R
 
 #[cfg(test)]
 mod tests {
-    use crate::app::{AccountCfg, App, KeyCfg, Settings, Strategy};
+    use crate::app::settings::Strategy;
+    use crate::app::{AccountCfg, App, KeyCfg, Settings};
     use crate::store::Store;
     use axum::Json;
     use axum::http::{HeaderMap, StatusCode};

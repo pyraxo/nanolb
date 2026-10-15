@@ -1,11 +1,11 @@
 use crate::app::{App, Provider, Warmup};
-use crate::control::admin::{account_or_err, parse_since, s};
-use crate::time::{now_ms, ts_iso};
+use crate::control::admin::{AdminError, account_arg, str_arg};
+use crate::time::{now_ms, parse_since, ts_iso};
 use crate::upstream::codex;
 use serde_json::{Value, json};
 use std::sync::Arc;
 
-pub fn sessions_list(app: &App, a: &Value) -> Value {
+pub(crate) fn sessions_list(app: &App, a: &Value) -> Value {
     let key = a["key"].as_str();
     let resolved = a["account"]
         .as_str()
@@ -28,16 +28,16 @@ pub fn sessions_list(app: &App, a: &Value) -> Value {
     )
 }
 
-pub fn session_delete(app: &App, a: &Value) -> Result<Value, String> {
-    let key = s(a, "key")?;
+pub(crate) fn session_delete(app: &App, a: &Value) -> Result<Value, AdminError> {
+    let key = str_arg(a, "key")?;
     let removed = app.sessions.remove(&app.store, key);
     Ok(json!({"removed": removed}))
 }
 
-pub fn sessions_purge(app: &App, a: &Value) -> Result<Value, String> {
+pub(crate) fn sessions_purge(app: &App, a: &Value) -> Result<Value, AdminError> {
     let all = a["all"].as_bool().unwrap_or(false);
     let resolved = match a["account"].as_str() {
-        Some(q) => Some(app.accounts.resolve(q).map_err(|e| e.to_string())?.id.clone()),
+        Some(q) => Some(app.accounts.resolve(q)?.id.clone()),
         None => None,
     };
     let account = resolved.as_deref();
@@ -46,7 +46,7 @@ pub fn sessions_purge(app: &App, a: &Value) -> Result<Value, String> {
         None => None,
     };
     if !all && account.is_none() && cutoff.is_none() {
-        return Err("sessions_purge needs all, account or older_than".into());
+        return Err(AdminError::Invalid("sessions_purge needs all, account or older_than".into()));
     }
     let removed = app.sessions.purge(&app.store, |p| {
         all || account.is_some_and(|q| p.account == q) || cutoff.is_some_and(|c| p.at < c)
@@ -54,21 +54,21 @@ pub fn sessions_purge(app: &App, a: &Value) -> Result<Value, String> {
     Ok(json!({"removed": removed}))
 }
 
-fn codex_account(app: &App, a: &Value) -> Result<Arc<crate::app::Account>, String> {
-    let acc = account_or_err(app, a)?;
+fn codex_account(app: &App, a: &Value) -> Result<Arc<crate::app::Account>, AdminError> {
+    let acc = account_arg(app, a)?;
     if acc.provider() != Provider::Codex {
-        return Err(format!("account {} is not a codex account", acc.id));
+        return Err(AdminError::Invalid(format!("account {} is not a codex account", acc.id)));
     }
     Ok(acc)
 }
 
-pub async fn reset_credits_list(app: &Arc<App>, a: &Value) -> Result<Value, String> {
+pub(crate) async fn reset_credits_list(app: &Arc<App>, a: &Value) -> Result<Value, AdminError> {
     let acc = codex_account(app, a)?;
     codex::ensure_fresh(app, &acc, false).await?;
-    codex::wham(app, &acc, reqwest::Method::GET, "rate-limit-reset-credits", None).await
+    Ok(codex::wham(app, &acc, reqwest::Method::GET, "rate-limit-reset-credits", None).await?)
 }
 
-pub async fn reset_credits_consume(app: &Arc<App>, a: &Value) -> Result<Value, String> {
+pub(crate) async fn reset_credits_consume(app: &Arc<App>, a: &Value) -> Result<Value, AdminError> {
     let acc = codex_account(app, a)?;
     codex::ensure_fresh(app, &acc, false).await?;
     let credit_id = match a["credit_id"].as_str() {
@@ -82,7 +82,7 @@ pub async fn reset_credits_consume(app: &Arc<App>, a: &Value) -> Result<Value, S
                 .filter(|c| c["status"].as_str() == Some("available"))
                 .min_by_key(|c| c["expires_at"].as_str().unwrap_or("9999").to_string())
                 .and_then(|c| c["id"].as_str().map(str::to_string))
-                .ok_or_else(|| format!("account {} has no available reset credit", acc.id))?
+                .ok_or_else(|| AdminError::Invalid(format!("account {} has no available reset credit", acc.id)))?
         }
     };
     let body = json!({"credit_id": credit_id, "redeem_request_id": crate::id::uuid_v4()});
@@ -92,12 +92,12 @@ pub async fn reset_credits_consume(app: &Arc<App>, a: &Value) -> Result<Value, S
     Ok(res)
 }
 
-pub struct Projection {
-    pub exhausts_at: Option<i64>,
-    pub before_reset: bool,
+pub(crate) struct Projection {
+    pub(crate) exhausts_at: Option<i64>,
+    pub(crate) before_reset: bool,
 }
 
-pub fn project_exhaustion(
+pub(crate) fn project_exhaustion(
     used_percent: f64,
     now: i64,
     reset_at: i64,
@@ -132,19 +132,17 @@ pub fn project_exhaustion(
     }
 }
 
-fn parse_hhmm(v: &str) -> Result<u32, String> {
-    let (h, m) = v.split_once(':').ok_or("work_start must be HH:MM")?;
-    let (h, m): (u32, u32) = (
-        h.parse().map_err(|_| "work_start must be HH:MM")?,
-        m.parse().map_err(|_| "work_start must be HH:MM")?,
-    );
+fn parse_hhmm(v: &str) -> Result<u32, AdminError> {
+    let bad = || AdminError::Invalid("work_start must be HH:MM".into());
+    let (h, m) = v.split_once(':').ok_or_else(bad)?;
+    let (h, m): (u32, u32) = (h.parse().map_err(|_| bad())?, m.parse().map_err(|_| bad())?);
     if h > 23 || m > 59 {
-        return Err("work_start must be HH:MM".into());
+        return Err(bad());
     }
     Ok(h * 60 + m)
 }
 
-pub fn plan(app: &App, a: &Value) -> Result<Value, String> {
+pub(crate) fn plan(app: &App, a: &Value) -> Result<Value, AdminError> {
     let now = now_ms();
     let lookback = (now - parse_since(a.get("lookback").filter(|v| !v.is_null()).unwrap_or(&json!("6h")))?).max(60_000);
     let start = parse_hhmm(a["work_start"].as_str().unwrap_or("09:00"))?;
@@ -204,7 +202,7 @@ pub fn plan(app: &App, a: &Value) -> Result<Value, String> {
                 last_fired: now,
             });
             drop(c);
-            app.accounts.save(&app.store, acc).map_err(|e| e.to_string())?;
+            app.accounts.save(&app.store, acc)?;
             applied = true;
         }
         out.push(json!({
@@ -216,21 +214,18 @@ pub fn plan(app: &App, a: &Value) -> Result<Value, String> {
     Ok(json!({"generated_at": ts_iso(now), "work_start": format!("{:02}:{:02}", start / 60, start % 60), "accounts": out}))
 }
 
-pub fn analytics(app: &App, a: &Value) -> Result<Value, String> {
+pub(crate) fn analytics(app: &App, a: &Value) -> Result<Value, AdminError> {
     let since = parse_since(a.get("since").filter(|v| !v.is_null()).unwrap_or(&json!("7d")))?;
     let view = a["view"].as_str().unwrap_or("all");
     let by = a["by"].as_str().unwrap_or("account");
     let bucket = a["bucket"].as_str().unwrap_or("day");
     let limit = a["limit"].as_i64().unwrap_or(10).clamp(1, 1000);
     if view != "all" {
-        return app.store.analytics(view, by, bucket, since, limit).map_err(|e| e.to_string());
+        return Ok(app.store.analytics(view, by, bucket, since, limit)?);
     }
     let mut o = serde_json::Map::new();
     for v in ["series", "latency", "errors", "cache", "top", "utilization"] {
-        o.insert(
-            v.into(),
-            app.store.analytics(v, by, bucket, since, limit).map_err(|e| e.to_string())?,
-        );
+        o.insert(v.into(), app.store.analytics(v, by, bucket, since, limit)?);
     }
     Ok(Value::Object(o))
 }

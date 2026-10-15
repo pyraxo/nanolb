@@ -5,7 +5,7 @@ use crate::sse;
 use crate::store::{Usage, UsageMeta};
 use crate::time::now_ms;
 use crate::translate::{anthropic, chat};
-use crate::upstream::codex;
+use crate::upstream::{self, Failure, classify, codex, limit_reset_from_error};
 use axum::body::{Body, Bytes};
 use axum::extract::{RawQuery, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
@@ -16,7 +16,6 @@ use serde_json::{Value, json};
 use std::convert::Infallible;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::sync::atomic::Ordering::Relaxed;
 
 type Events = Pin<Box<dyn Stream<Item = Result<Event, eventsource_stream::EventStreamError<reqwest::Error>>> + Send>>;
 
@@ -72,43 +71,13 @@ fn is_failure(ev: &Event) -> bool {
 
 fn upstream_request(app: &App, acc: &Account, provider: Provider, h: Option<&HeaderMap>, cache_key: &str) -> reqwest::RequestBuilder {
     if provider == Provider::OpenRouter {
-        return app
-            .http
-            .post(format!("{}/responses", app.settings().openrouter_base))
-            .bearer_auth(&acc.cfg.read().access_token)
-            .header("http-referer", "https://github.com/pyraxo/nanolb")
-            .header("x-title", "nanolb");
+        return upstream::request(app, acc, reqwest::Method::POST, "/responses", None);
     }
-    let rb = codex::request(app, acc, reqwest::Method::POST, "/codex/responses", h);
+    let rb = upstream::request(app, acc, reqwest::Method::POST, "/codex/responses", h);
     if h.is_some_and(|h| h.contains_key("session_id") || h.contains_key("session-id")) || cache_key.is_empty() {
         return rb;
     }
     rb.header("session_id", cache_key)
-}
-
-enum Failure {
-    Retry(i64),
-    Client,
-}
-
-fn classify(status: u16, err: &Value) -> Failure {
-    let code = err["code"].as_str().or(err["type"].as_str()).unwrap_or_default();
-    let reset = codex::limit_reset_from_error(&json!({ "error": err }));
-    match status {
-        429 => Failure::Retry(reset.unwrap_or(now_ms() + 60_000)),
-        401 => Failure::Retry(now_ms() + 300_000),
-        403 => Failure::Retry(0),
-        500.. => Failure::Retry(now_ms() + 5_000),
-        0 if reset.is_some() => Failure::Retry(reset.unwrap()),
-        0 if code.contains("rate_limit")
-            || code.contains("usage_limit")
-            || code.contains("overloaded")
-            || code.contains("server_error") =>
-        {
-            Failure::Retry(now_ms() + 5_000)
-        }
-        _ => Failure::Client,
-    }
 }
 
 async fn send(
@@ -149,7 +118,7 @@ async fn send(
         };
         if let Err(e) = codex::ensure_fresh(app, &acc, false).await {
             tried.push(acc.id.clone());
-            last = (502, e);
+            last = (502, e.to_string());
             continue;
         }
         let guard = acc.acquire();
@@ -295,7 +264,7 @@ fn on_event(tx: &mut Tx, ev: &Event, acc: &Account, tap: &mut Tap, collect: bool
                 tap.response = Some(v["response"].clone());
                 if v["type"] == "response.failed" {
                     let err = &v["response"]["error"];
-                    if let Some(reset) = codex::limit_reset_from_error(&json!({"error": err})) {
+                    if let Some(reset) = limit_reset_from_error(&json!({"error": err})) {
                         acc.fail(reset, err["message"].as_str().unwrap_or("rate limited").into());
                     }
                 }
@@ -458,7 +427,7 @@ async fn handle(app: Arc<App>, kind: ApiFormat, h: HeaderMap, body: Bytes) -> Re
         return ApiError::new(kind, 401, "invalid or missing api key").into_response();
     };
     if let Err(e) = key.check(started) {
-        return ApiError::new(kind, 429, e.to_string()).into_response();
+        return ApiError::from((kind, e)).into_response();
     }
     let req: Value = match serde_json::from_slice(&body) {
         Ok(v) => v,
@@ -470,11 +439,11 @@ async fn handle(app: Arc<App>, kind: ApiFormat, h: HeaderMap, body: Bytes) -> Re
         ApiFormat::Responses => (req.clone(), None, None),
         ApiFormat::Chat | ApiFormat::OpenRouter => match chat::to_responses(&req, kind == ApiFormat::OpenRouter) {
             Ok((up, opts)) => (up, Some(opts), None),
-            Err(e) => return ApiError::new(kind, 400, &e).into_response(),
+            Err(e) => return ApiError::from((kind, e)).into_response(),
         },
         ApiFormat::Anthropic => match anthropic::to_responses(&req, canonical_model(&requested)) {
             Ok((up, opts)) => (up, None, Some(opts)),
-            Err(e) => return ApiError::new(kind, 400, &e).into_response(),
+            Err(e) => return ApiError::from((kind, e)).into_response(),
         },
     };
     let model = canonical_model(up["model"].as_str().unwrap_or(&requested)).to_string();
@@ -667,7 +636,7 @@ pub async fn codex_models(State(app): State<Arc<App>>, h: HeaderMap, RawQuery(q)
         return ApiError::new(ApiFormat::Responses, 503, "no available accounts").into_response();
     };
     if let Err(e) = codex::ensure_fresh(&app, &acc, false).await {
-        return ApiError::new(ApiFormat::Responses, 502, &e).into_response();
+        return ApiError::new(ApiFormat::Responses, 502, e.to_string()).into_response();
     }
     let path = format!(
         "/codex/models?{}",

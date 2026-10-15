@@ -10,15 +10,15 @@ pub(crate) mod pricing;
 pub(crate) mod sessions;
 pub(crate) mod settings;
 
-pub(crate) use account::{Account, AccountCfg, Inflight, Provider, RateLimit, Warmup};
+pub(crate) use account::{Account, AccountCfg, Inflight, Provider, Warmup};
 pub(crate) use accounts::{Accounts, LookupError};
 pub(crate) use files::FileOwners;
 pub(crate) use key::{Key, KeyCfg, KeyRejected, Limit, Window};
 pub(crate) use keys::Keys;
 pub(crate) use logins::{LoginState, Logins};
 pub(crate) use models::{ModelCatalog, canonical_model};
-pub(crate) use sessions::{Pin, Sessions};
-pub(crate) use settings::{Settings, Strategy};
+pub(crate) use sessions::Sessions;
+pub(crate) use settings::Settings;
 
 use crate::store::{Store, StoreError, Usage};
 use crate::time::now_ms;

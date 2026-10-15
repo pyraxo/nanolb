@@ -1,3 +1,4 @@
+use super::TranslateError;
 use crate::app::pricing::Rates;
 use bytes::Bytes;
 use serde_json::{Map, Value, json};
@@ -64,12 +65,12 @@ fn effort_for(tokens: u64) -> &'static str {
     }
 }
 
-pub fn to_responses(req: &Value, openrouter: bool) -> Result<(Value, Opts), String> {
+pub fn to_responses(req: &Value, openrouter: bool) -> Result<(Value, Opts), TranslateError> {
     let messages = req["messages"]
         .as_array()
         .filter(|m| !m.is_empty())
-        .ok_or("messages is required and must be a non-empty array")?;
-    let client_model = req["model"].as_str().ok_or("model is required")?;
+        .ok_or(TranslateError::MissingMessages)?;
+    let client_model = req["model"].as_str().ok_or(TranslateError::MissingModel)?;
 
     let mut instructions = String::new();
     let mut input: Vec<Value> = Vec::with_capacity(messages.len());

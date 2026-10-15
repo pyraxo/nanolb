@@ -15,13 +15,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 pub fn router(app: Arc<App>) -> Router {
-    let exec_app = app.clone();
-    let exec: mcp::Exec = Arc::new(move |op, args| {
-        let app = exec_app.clone();
-        Box::pin(async move { admin::op_call(&app, &op, args).await })
-    });
     let mcp = Router::new()
-        .nest_service("/mcp", mcp::http_service(exec))
+        .nest_service("/mcp", mcp::http_service(app.clone()))
         .layer(from_fn_with_state(app.clone(), auth::admin_guard));
     let admin = Router::new()
         .route("/admin/{op}", get(admin::http).post(admin::http))
