@@ -13,7 +13,6 @@ pub(crate) enum Provider {
     #[default]
     Codex,
     OpenRouter,
-    #[serde(other)]
     Other,
 }
 
@@ -33,11 +32,39 @@ impl fmt::Display for Provider {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub(crate) enum Kind {
+    Known(Provider),
+    Unknown(String),
+}
+
+impl Kind {
+    pub(crate) const fn provider(&self) -> Provider {
+        match self {
+            Self::Known(p) => *p,
+            Self::Unknown(_) => Provider::Other,
+        }
+    }
+}
+
+impl Default for Kind {
+    fn default() -> Self {
+        Self::Known(Provider::Codex)
+    }
+}
+
+impl From<Provider> for Kind {
+    fn from(p: Provider) -> Self {
+        Self::Known(p)
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 pub(crate) struct AccountCfg {
     pub(crate) id: String,
-    #[serde(rename = "kind", default)]
-    pub(crate) provider: Provider,
+    #[serde(default)]
+    pub(crate) kind: Kind,
     pub(crate) email: String,
     pub(crate) label: String,
     pub(crate) plan: String,
@@ -157,7 +184,7 @@ impl Account {
     }
 
     pub(crate) fn provider(&self) -> Provider {
-        self.cfg.read().provider
+        self.cfg.read().kind.provider()
     }
 
     pub(crate) fn acquire(self: &Arc<Self>) -> Inflight {
@@ -198,7 +225,7 @@ impl Account {
         let cd = self.cooldown_until.load(Relaxed);
         let hl = *self.health.lock();
         json!({
-            "id": c.id, "kind": c.provider, "email": c.email, "label": c.label, "plan": c.plan,
+            "id": c.id, "kind": c.kind, "email": c.email, "label": c.label, "plan": c.plan,
             "enabled": c.enabled, "priority": c.priority, "available": self.available(now),
             "cooldown_until": (cd > now).then(|| ts_iso(cd)),
             "inflight": self.inflight.load(Relaxed),
@@ -219,5 +246,22 @@ pub(crate) struct Inflight(Arc<Account>);
 impl Drop for Inflight {
     fn drop(&mut self) {
         self.0.inflight.fetch_sub(1, Relaxed);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AccountCfg, Provider};
+    use serde_json::json;
+
+    #[test]
+    fn unknown_kind_round_trips_as_stored() {
+        let cfg: AccountCfg = serde_json::from_value(json!({
+            "id": "a", "kind": "gemini", "email": "", "label": "", "plan": "", "chatgpt_account_id": "",
+            "access_token": "", "refresh_token": "", "id_token": "", "expires_at": 0, "last_refresh": 0, "created_at": 0,
+        }))
+        .unwrap();
+        assert_eq!(cfg.kind.provider(), Provider::Other);
+        assert_eq!(serde_json::to_value(&cfg).unwrap()["kind"], "gemini");
     }
 }

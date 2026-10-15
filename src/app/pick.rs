@@ -81,7 +81,7 @@ mod tests {
                     &app.store,
                     AccountCfg {
                         id: (*id).to_owned(),
-                        provider: Provider::Codex,
+                        kind: Provider::Codex.into(),
                         enabled: true,
                         ..Default::default()
                     },

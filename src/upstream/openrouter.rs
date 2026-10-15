@@ -29,7 +29,7 @@ pub(crate) fn account_cfg(key: &str, label: Option<&str>, info: &Value) -> Accou
     let label = label.or_else(|| info["data"]["label"].as_str()).unwrap_or("openrouter").to_owned();
     AccountCfg {
         id: sha256_hex(key)[..12].to_owned(),
-        provider: Provider::OpenRouter,
+        kind: Provider::OpenRouter.into(),
         label,
         plan: "openrouter".into(),
         access_token: key.into(),

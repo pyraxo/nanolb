@@ -180,7 +180,7 @@ impl Accounts {
         for a in self.list.read().iter() {
             let weights = {
                 let c = a.cfg.read();
-                if c.provider != Provider::Codex || !c.enabled || !permitted(allowed, &a.id) {
+                if c.kind.provider() != Provider::Codex || !c.enabled || !permitted(allowed, &a.id) {
                     continue;
                 }
                 plan_weights(&c.plan)
@@ -228,7 +228,7 @@ impl Accounts {
         for a in self.list.read().iter() {
             {
                 let c = a.cfg.read();
-                if c.provider != provider || !c.enabled || !permitted(allowed, &a.id) {
+                if c.kind.provider() != provider || !c.enabled || !permitted(allowed, &a.id) {
                     continue;
                 }
             }

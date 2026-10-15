@@ -49,7 +49,7 @@ pub(crate) fn account_from_tokens(id_token: &str, access: &str, refresh: &str, l
     let now = now_ms();
     Ok(AccountCfg {
         id: sha256_hex(&format!("{}:{}", c.account_id, c.email))[..12].to_owned(),
-        provider: Provider::Codex,
+        kind: Provider::Codex.into(),
         label: label.map_or_else(|| c.email.clone(), str::to_owned),
         email: c.email,
         plan: c.plan,

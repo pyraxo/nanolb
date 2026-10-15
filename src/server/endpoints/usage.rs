@@ -40,7 +40,7 @@ fn pool(app: &App, key: &Key) -> (Value, Value, bool, String) {
         .iter()
         .filter(|a| {
             let c = a.cfg.read();
-            c.provider == Provider::Codex && c.enabled && (key.cfg.accounts.is_empty() || key.cfg.accounts.contains(&a.id))
+            c.kind.provider() == Provider::Codex && c.enabled && (key.cfg.accounts.is_empty() || key.cfg.accounts.contains(&a.id))
         })
         .cloned()
         .collect();
