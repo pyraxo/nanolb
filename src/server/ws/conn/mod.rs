@@ -123,7 +123,7 @@ impl Conn {
         codex::ensure_fresh(&self.app, acc, false).await.map_err(Step::Next)?;
         let req = self.handshake(s, acc).map_err(Step::Stop)?;
         let timeout = Duration::from_secs(s.first_event_timeout_secs.max(5));
-        match tokio::time::timeout(timeout, tokio_tungstenite::connect_async(req)).await {
+        match tokio::time::timeout(timeout, tokio_tungstenite::connect_async_with_config(req, None, true)).await {
             Ok(Ok((ws, resp))) => {
                 codex::apply_rate_headers(acc, resp.headers());
                 Ok((ws, pass_headers(resp.headers())))

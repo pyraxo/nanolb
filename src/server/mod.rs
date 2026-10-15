@@ -11,6 +11,7 @@ use axum::Router;
 use axum::extract::DefaultBodyLimit;
 use axum::middleware::from_fn_with_state;
 use axum::routing::{get, post};
+use axum::serve::ListenerExt;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -53,7 +54,12 @@ pub(crate) async fn serve(host: String, port: u16) -> anyhow::Result<()> {
     crate::upstream::codex::spawn_background(app.clone());
     let listener = tokio::net::TcpListener::bind((host.as_str(), port))
         .await
-        .map_err(|e| anyhow::anyhow!("bind {host}:{port}: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("bind {host}:{port}: {e}"))?
+        .tap_io(|tcp| {
+            if let Err(e) = tcp.set_nodelay(true) {
+                tracing::warn!(error = %e, "cannot set TCP_NODELAY on a client connection");
+            }
+        });
     let pid_file = home::pid_path();
     std::fs::write(&pid_file, std::process::id().to_string())?;
     tracing::info!(

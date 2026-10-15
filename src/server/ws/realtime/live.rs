@@ -89,7 +89,7 @@ impl Live {
             req.headers_mut().insert(header::SEC_WEBSOCKET_PROTOCOL, p.clone());
         }
         let timeout = Duration::from_secs(self.settings.first_event_timeout_secs.max(5));
-        match tokio::time::timeout(timeout, tokio_tungstenite::connect_async(req)).await {
+        match tokio::time::timeout(timeout, tokio_tungstenite::connect_async_with_config(req, None, true)).await {
             Ok(Ok((up, resp))) => {
                 let proto = resp
                     .headers()
