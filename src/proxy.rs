@@ -1,7 +1,10 @@
 use crate::codex;
 use crate::state::{Account, App, Key};
 use crate::translate::{anthropic, chat};
-use crate::{now_ms, sse};
+use crate::server::auth::api_key;
+use crate::server::error::{ApiError, ApiFormat};
+use crate::sse;
+use crate::time::now_ms;
 use axum::body::{Body, Bytes};
 use axum::extract::{RawQuery, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
@@ -15,54 +18,6 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering::Relaxed;
 
 type Events = Pin<Box<dyn Stream<Item = Result<Event, eventsource_stream::EventStreamError<reqwest::Error>>> + Send>>;
-
-#[derive(Clone, Copy, PartialEq)]
-pub enum Kind {
-    Responses,
-    Chat,
-    OpenRouter,
-    Anthropic,
-}
-
-impl Kind {
-    fn endpoint(self) -> &'static str {
-        match self {
-            Kind::Responses => "responses",
-            Kind::Chat => "chat",
-            Kind::OpenRouter => "openrouter",
-            Kind::Anthropic => "anthropic",
-        }
-    }
-}
-
-pub fn error(kind: Kind, status: u16, msg: &str) -> Response {
-    let body = match kind {
-        Kind::Anthropic => anthropic::error_body(status, msg),
-        Kind::OpenRouter => json!({"error": {"code": status, "message": msg}}),
-        _ => json!({"error": {"message": msg, "type": if status == 429 { "rate_limit_error" } else { "api_error" }, "code": Value::Null}}),
-    };
-    (StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY), axum::Json(body)).into_response()
-}
-
-pub fn limited(kind: Kind, provider: &str, until: i64) -> Response {
-    let secs = ((until - now_ms()) / 1000).max(1);
-    let mut r = error(
-        kind,
-        429,
-        &format!("all {provider} accounts are rate limited until {}", crate::ts_iso(until)),
-    );
-    r.headers_mut().insert(header::RETRY_AFTER, HeaderValue::from(secs));
-    r
-}
-
-pub fn auth(app: &App, h: &HeaderMap) -> Option<Arc<Key>> {
-    let bearer = h
-        .get(header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "));
-    let secret = bearer.or_else(|| h.get("x-api-key").and_then(|v| v.to_str().ok()))?;
-    app.key_by_secret(secret.trim())
-}
 
 fn session_key(h: &HeaderMap, client: &Value, up: &Value) -> String {
     let hdr = ["session_id", "session-id", "thread-id", "conversation_id"]
@@ -78,7 +33,7 @@ fn session_key(h: &HeaderMap, client: &Value, up: &Value) -> String {
                     seed.push_str(&it.to_string());
                 }
             }
-            crate::sha256_hex(&seed)[..24].to_string()
+            crate::id::sha256_hex(&seed)[..24].to_string()
         })
 }
 
@@ -379,7 +334,7 @@ fn on_event(tx: &mut Tx, ev: &Event, acc: &Account, tap: &mut Tap, collect: bool
 struct Job {
     app: Arc<App>,
     key: Arc<Key>,
-    kind: Kind,
+    kind: ApiFormat,
     model: String,
     started: i64,
 }
@@ -418,7 +373,7 @@ async fn run(job: Job, up: Upstream, mut tx: Tx, stream: bool, opts_json: impl F
         ttfb,
         headers,
     } = up;
-    let pass = job.kind == Kind::Responses;
+    let pass = job.kind == ApiFormat::Responses;
     if !stream {
         let mut tap = Tap::default();
         let mut sink = vec![];
@@ -430,13 +385,13 @@ async fn run(job: Job, up: Upstream, mut tx: Tx, stream: bool, opts_json: impl F
         drop(guard);
         job.record(&acc, tap.response.as_ref(), ttfb);
         let Some(mut resp) = tap.response else {
-            return error(job.kind, 502, "upstream stream ended without a response");
+            return ApiError::new(job.kind, 502, "upstream stream ended without a response").into_response();
         };
         if resp["output"].as_array().is_none_or(|o| o.is_empty()) && !tap.items.is_empty() {
             resp["output"] = Value::Array(tap.items);
         }
         if resp["status"] == "failed" {
-            return error(job.kind, 502, resp["error"]["message"].as_str().unwrap_or("upstream failed"));
+            return ApiError::new(job.kind, 502, resp["error"]["message"].as_str().unwrap_or("upstream failed")).into_response();
         }
         let mut res = axum::Json(opts_json(&resp)).into_response();
         if pass {
@@ -506,39 +461,39 @@ async fn run(job: Job, up: Upstream, mut tx: Tx, stream: bool, opts_json: impl F
     res
 }
 
-async fn handle(app: Arc<App>, kind: Kind, h: HeaderMap, body: Bytes) -> Response {
+async fn handle(app: Arc<App>, kind: ApiFormat, h: HeaderMap, body: Bytes) -> Response {
     let started = now_ms();
-    let Some(key) = auth(&app, &h) else {
-        return error(kind, 401, "invalid or missing api key");
+    let Some(key) = api_key(&app, &h) else {
+        return ApiError::new(kind, 401, "invalid or missing api key").into_response();
     };
     if let Err(e) = key.check(started) {
-        return error(kind, 429, &e);
+        return ApiError::new(kind, 429, &e).into_response();
     }
     let req: Value = match serde_json::from_slice(&body) {
         Ok(v) => v,
-        Err(e) => return error(kind, 400, &format!("invalid json: {e}")),
+        Err(e) => return ApiError::new(kind, 400, &format!("invalid json: {e}")).into_response(),
     };
     let requested = req["model"].as_str().unwrap_or_default().to_string();
     let stream = req["stream"].as_bool().unwrap_or(false);
     let (mut up, tx) = match kind {
-        Kind::Responses => (req.clone(), Tx::Pass),
-        Kind::Chat | Kind::OpenRouter => match chat::to_responses(&req, kind == Kind::OpenRouter) {
+        ApiFormat::Responses => (req.clone(), Tx::Pass),
+        ApiFormat::Chat | ApiFormat::OpenRouter => match chat::to_responses(&req, kind == ApiFormat::OpenRouter) {
             Ok((up, opts)) => (up, Tx::Chat(chat::Stream::new(opts))),
-            Err(e) => return error(kind, 400, &e),
+            Err(e) => return ApiError::new(kind, 400, &e).into_response(),
         },
-        Kind::Anthropic => match anthropic::to_responses(&req, App::canonical_model(&requested)) {
+        ApiFormat::Anthropic => match anthropic::to_responses(&req, App::canonical_model(&requested)) {
             Ok((up, opts)) => (up, Tx::Anth(anthropic::Stream::new(opts))),
-            Err(e) => return error(kind, 400, &e),
+            Err(e) => return ApiError::new(kind, 400, &e).into_response(),
         },
     };
     let model = App::canonical_model(up["model"].as_str().unwrap_or(&requested)).to_string();
     if !key.allows_model(&requested) && !key.allows_model(&model) {
-        return error(kind, 403, &format!("model {requested} not allowed for this key"));
+        return ApiError::new(kind, 403, &format!("model {requested} not allowed for this key")).into_response();
     }
     up["model"] = Value::String(model.clone());
     let provider = App::provider_for(&model);
     if !app.accounts.read().iter().any(|a| a.cfg.read().kind == provider) {
-        return error(kind, 503, &format!("no {provider} accounts connected to serve model {model}"));
+        return ApiError::new(kind, 503, &format!("no {provider} accounts connected to serve model {model}")).into_response();
     }
     if provider == "codex" {
         codex::prepare_body(&mut up);
@@ -556,11 +511,11 @@ async fn handle(app: Arc<App>, kind: Kind, h: HeaderMap, body: Bytes) -> Respons
     {
         app.sticky.lock().insert(session.clone(), (acc, now_ms()));
     }
-    let upstream = match send(&app, &key, provider, (kind == Kind::Responses).then_some(&h), &up, &session).await {
+    let upstream = match send(&app, &key, provider, (kind == ApiFormat::Responses).then_some(&h), &up, &session).await {
         Ok(u) => u,
         Err((503, _)) if let Some(until) = app.next_available(provider, &key.cfg.accounts) => {
-            tracing::warn!(endpoint = kind.endpoint(), %model, until = %crate::ts_iso(until), "all accounts rate limited");
-            return limited(kind, provider, until);
+            tracing::warn!(endpoint = kind.endpoint(), %model, until = %crate::time::ts_iso(until), "all accounts rate limited");
+            return ApiError::limited(kind, provider, until).into_response();
         }
         Err((status, msg)) => {
             tracing::warn!(endpoint = kind.endpoint(), %model, status, error = %msg, "request failed");
@@ -568,7 +523,7 @@ async fn handle(app: Arc<App>, kind: Kind, h: HeaderMap, body: Bytes) -> Respons
                 Some(&key),
                 codex::usage_row(&key.cfg.id, "", &model, kind.endpoint(), status, &Value::Null, started, now_ms()),
             );
-            return error(kind, status, &msg);
+            return ApiError::new(kind, status, &msg).into_response();
         }
     };
     let job = Job {
@@ -580,13 +535,13 @@ async fn handle(app: Arc<App>, kind: Kind, h: HeaderMap, body: Bytes) -> Respons
     };
     let echo = requested.clone();
     match kind {
-        Kind::Responses => run(job, upstream, tx, stream, |r| r.clone()).await,
-        Kind::Chat | Kind::OpenRouter => {
-            let or = kind == Kind::OpenRouter;
+        ApiFormat::Responses => run(job, upstream, tx, stream, |r| r.clone()).await,
+        ApiFormat::Chat | ApiFormat::OpenRouter => {
+            let or = kind == ApiFormat::OpenRouter;
             let opts = chat::to_responses(&req, or).map(|(_, o)| o).unwrap();
             run(job, upstream, tx, stream, move |r| chat::from_response(r, &opts)).await
         }
-        Kind::Anthropic => {
+        ApiFormat::Anthropic => {
             let opts = anthropic::to_responses(&req, &model).map(|(_, mut o)| {
                 o.model = echo;
                 o
@@ -607,59 +562,44 @@ fn file_owner(app: &App, up: &Value) -> Option<String> {
         .and_then(|id| crate::endpoints::file_account(app, id))
 }
 
-pub async fn require_key(State(app): State<Arc<App>>, req: axum::extract::Request, next: axum::middleware::Next) -> Response {
-    if auth(&app, req.headers()).is_none() {
-        let p = req.uri().path();
-        let kind = if p.starts_with("/v1/messages") || req.headers().contains_key("anthropic-version") {
-            Kind::Anthropic
-        } else if p.starts_with("/api/") {
-            Kind::OpenRouter
-        } else {
-            Kind::Chat
-        };
-        return error(kind, 401, "invalid or missing api key");
-    }
-    next.run(req).await
-}
-
 pub async fn responses(State(app): State<Arc<App>>, h: HeaderMap, body: Bytes) -> Response {
-    handle(app, Kind::Responses, h, body).await
+    handle(app, ApiFormat::Responses, h, body).await
 }
 
 pub async fn chat_completions(State(app): State<Arc<App>>, h: HeaderMap, body: Bytes) -> Response {
-    handle(app, Kind::Chat, h, body).await
+    handle(app, ApiFormat::Chat, h, body).await
 }
 
 pub async fn openrouter(State(app): State<Arc<App>>, h: HeaderMap, body: Bytes) -> Response {
-    handle(app, Kind::OpenRouter, h, body).await
+    handle(app, ApiFormat::OpenRouter, h, body).await
 }
 
 pub async fn messages(State(app): State<Arc<App>>, h: HeaderMap, body: Bytes) -> Response {
-    handle(app, Kind::Anthropic, h, body).await
+    handle(app, ApiFormat::Anthropic, h, body).await
 }
 
 pub async fn count_tokens(State(app): State<Arc<App>>, h: HeaderMap, body: Bytes) -> Response {
-    if auth(&app, &h).is_none() {
-        return error(Kind::Anthropic, 401, "invalid or missing api key");
+    if api_key(&app, &h).is_none() {
+        return ApiError::new(ApiFormat::Anthropic, 401, "invalid or missing api key").into_response();
     }
     match serde_json::from_slice::<Value>(&body) {
         Ok(v) => axum::Json(anthropic::count_tokens(&v)).into_response(),
-        Err(e) => error(Kind::Anthropic, 400, &e.to_string()),
+        Err(e) => ApiError::new(ApiFormat::Anthropic, 400, &e.to_string()).into_response(),
     }
 }
 
 pub async fn models(State(app): State<Arc<App>>, h: HeaderMap) -> Response {
     let anth = h.contains_key("anthropic-version");
-    let kind = if anth { Kind::Anthropic } else { Kind::Chat };
-    if auth(&app, &h).is_none() {
-        return error(kind, 401, "invalid or missing api key");
+    let kind = if anth { ApiFormat::Anthropic } else { ApiFormat::Chat };
+    if api_key(&app, &h).is_none() {
+        return ApiError::new(kind, 401, "invalid or missing api key").into_response();
     }
     let created = app.started_at / 1000;
     let body = if anth {
         let data: Vec<Value> = app
             .model_list()
             .into_iter()
-            .map(|(m, _)| json!({"type": "model", "id": m, "display_name": m, "created_at": crate::ts_iso(app.started_at)}))
+            .map(|(m, _)| json!({"type": "model", "id": m, "display_name": m, "created_at": crate::time::ts_iso(app.started_at)}))
             .collect();
         json!({"first_id": data.first().map(|d| d["id"].clone()), "last_id": data.last().map(|d| d["id"].clone()), "has_more": false, "data": data})
     } else {
@@ -691,8 +631,8 @@ pub async fn openrouter_models(State(app): State<Arc<App>>) -> Response {
 }
 
 pub async fn openrouter_key(State(app): State<Arc<App>>, h: HeaderMap) -> Response {
-    let Some(key) = auth(&app, &h) else {
-        return error(Kind::OpenRouter, 401, "invalid or missing api key");
+    let Some(key) = api_key(&app, &h) else {
+        return ApiError::new(ApiFormat::OpenRouter, 401, "invalid or missing api key").into_response();
     };
     let v = key.view();
     let u = &v["usage"];
@@ -708,14 +648,14 @@ pub async fn openrouter_key(State(app): State<Arc<App>>, h: HeaderMap) -> Respon
 }
 
 pub async fn codex_models(State(app): State<Arc<App>>, h: HeaderMap, RawQuery(q): RawQuery) -> Response {
-    let Some(key) = auth(&app, &h) else {
-        return error(Kind::Responses, 401, "invalid or missing api key");
+    let Some(key) = api_key(&app, &h) else {
+        return ApiError::new(ApiFormat::Responses, 401, "invalid or missing api key").into_response();
     };
     let Some(acc) = app.pick("codex", &key.cfg.accounts, &[], None) else {
-        return error(Kind::Responses, 503, "no available accounts");
+        return ApiError::new(ApiFormat::Responses, 503, "no available accounts").into_response();
     };
     if let Err(e) = codex::ensure_fresh(&app, &acc, false).await {
-        return error(Kind::Responses, 502, &e);
+        return ApiError::new(ApiFormat::Responses, 502, &e).into_response();
     }
     let path = format!(
         "/codex/models?{}",
@@ -737,7 +677,7 @@ pub async fn codex_models(State(app): State<Arc<App>>, h: HeaderMap, RawQuery(q)
             }
             res
         }
-        Err(e) => error(Kind::Responses, 502, &e.to_string()),
+        Err(e) => ApiError::new(ApiFormat::Responses, 502, &e.to_string()).into_response(),
     }
 }
 
@@ -780,13 +720,13 @@ event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{
         let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}", l.local_addr().unwrap());
         tokio::spawn(async move { axum::serve(l, upstream).await.unwrap() });
-        let dir = std::env::temp_dir().join(format!("nanolb-proxy-{}", crate::random_hex(4)));
+        let dir = std::env::temp_dir().join(format!("nanolb-proxy-{}", crate::id::random_hex(4)));
         let app = App::new(Store::open(&dir).unwrap(), "admin".into());
         app.save_settings(Settings {
             upstream_base: base,
             ..settings
         });
-        let far = crate::now_ms() + 86_400_000;
+        let far = crate::time::now_ms() + 86_400_000;
         for (id, priority) in [("a", 0), ("b", 1)] {
             app.upsert_account(AccountCfg {
                 id: id.into(),
@@ -795,14 +735,14 @@ event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{
                 priority,
                 chatgpt_account_id: format!("acct-{id}"),
                 expires_at: far,
-                last_refresh: crate::now_ms(),
+                last_refresh: crate::time::now_ms(),
                 ..Default::default()
             });
         }
         app.save_key(KeyCfg {
             id: "k".into(),
             name: "k".into(),
-            hash: crate::sha256_hex("nlb-test"),
+            hash: crate::id::sha256_hex("nlb-test"),
             prefix: "nlb-test".into(),
             accounts: vec![],
             models: vec![],

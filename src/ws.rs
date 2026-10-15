@@ -1,12 +1,14 @@
 use crate::codex;
-use crate::now_ms;
-use crate::proxy::{self, Inflight, Kind};
+use crate::proxy::Inflight;
+use crate::server::auth::api_key;
+use crate::server::error::{ApiError, ApiFormat};
 use crate::state::{Account, App, Key};
+use crate::time::now_ms;
 use axum::Router;
 use axum::extract::ws::{self, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, RawQuery, State};
 use axum::http::{HeaderMap, HeaderName, HeaderValue, header};
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use bytes::Bytes;
 use futures::{SinkExt, StreamExt};
@@ -264,7 +266,7 @@ impl Conn {
             Some(until) => error_frame(
                 429,
                 "usage_limit_reached",
-                &format!("all codex accounts are rate limited until {}", crate::ts_iso(until)),
+                &format!("all codex accounts are rate limited until {}", crate::time::ts_iso(until)),
                 Some(((until - now_ms()) / 1000).max(1)),
             ),
             None => error_frame(f.0, "api_error", &f.1, None),
@@ -273,8 +275,8 @@ impl Conn {
 
     fn fail_response(&self, f: &Fail) -> Response {
         match self.limited_until(f) {
-            Some(until) => proxy::limited(Kind::Responses, "codex", until),
-            None => proxy::error(Kind::Responses, f.0, &f.1),
+            Some(until) => ApiError::limited(ApiFormat::Responses, "codex", until).into_response(),
+            None => ApiError::new(ApiFormat::Responses, f.0, &f.1).into_response(),
         }
     }
 
@@ -328,7 +330,7 @@ impl Conn {
                     for it in v["input"].as_array().into_iter().flatten().take(2) {
                         seed.push_str(&it.to_string());
                     }
-                    crate::sha256_hex(&seed)[..24].to_string()
+                    crate::id::sha256_hex(&seed)[..24].to_string()
                 },
                 str::to_string,
             ));
@@ -588,11 +590,11 @@ impl Conn {
 }
 
 pub async fn upgrade(State(app): State<Arc<App>>, h: HeaderMap, ws: WebSocketUpgrade) -> Response {
-    let Some(key) = proxy::auth(&app, &h) else {
-        return proxy::error(Kind::Responses, 401, "invalid or missing api key");
+    let Some(key) = api_key(&app, &h) else {
+        return ApiError::new(ApiFormat::Responses, 401, "invalid or missing api key").into_response();
     };
     if let Err(e) = key.check(now_ms()) {
-        return proxy::error(Kind::Responses, 429, &e);
+        return ApiError::new(ApiFormat::Responses, 429, &e).into_response();
     }
     let mut conn = Conn {
         app,
@@ -640,7 +642,7 @@ fn with_query(url: String, q: Option<&str>) -> String {
 }
 
 fn authed(app: &App, h: &HeaderMap) -> Result<Arc<Key>, Fail> {
-    let key = proxy::auth(app, h).ok_or_else(|| Fail(401, "invalid or missing api key".into()))?;
+    let key = api_key(app, h).ok_or_else(|| Fail(401, "invalid or missing api key".into()))?;
     key.check(now_ms()).map_err(|e| Fail(429, e))?;
     Ok(key)
 }
@@ -649,7 +651,7 @@ async fn calls(app: Arc<App>, h: HeaderMap, target: String, body: Bytes) -> Resp
     let started = now_ms();
     let key = match authed(&app, &h) {
         Ok(k) => k,
-        Err(f) => return proxy::error(Kind::Responses, f.0, &f.1),
+        Err(f) => return ApiError::new(ApiFormat::Responses, f.0, &f.1).into_response(),
     };
     let s = app.settings();
     let mut tried: Vec<String> = vec![];
@@ -674,11 +676,11 @@ async fn calls(app: Arc<App>, h: HeaderMap, target: String, body: Bytes) -> Resp
         }
         let mut req = match rb.build() {
             Ok(r) => r,
-            Err(e) => return proxy::error(Kind::Responses, 500, &e.to_string()),
+            Err(e) => return ApiError::new(ApiFormat::Responses, 500, &e.to_string()).into_response(),
         };
         match reqwest::Url::parse(&target) {
             Ok(u) => *req.url_mut() = u,
-            Err(e) => return proxy::error(Kind::Responses, 500, &e.to_string()),
+            Err(e) => return ApiError::new(ApiFormat::Responses, 500, &e.to_string()).into_response(),
         }
         let res = match tokio::time::timeout(Duration::from_secs(s.first_event_timeout_secs.max(5)), app.http.execute(req)).await {
             Ok(Ok(r)) => r,
@@ -739,22 +741,22 @@ async fn calls(app: Arc<App>, h: HeaderMap, target: String, body: Bytes) -> Resp
         return out;
     }
     match (last.0 == 503).then(|| app.next_available("codex", &key.cfg.accounts)).flatten() {
-        Some(until) => proxy::limited(Kind::Responses, "codex", until),
-        None => proxy::error(Kind::Responses, last.0, &last.1),
+        Some(until) => ApiError::limited(ApiFormat::Responses, "codex", until).into_response(),
+        None => ApiError::new(ApiFormat::Responses, last.0, &last.1).into_response(),
     }
 }
 
 async fn live(app: Arc<App>, h: HeaderMap, ws: WebSocketUpgrade, call_id: Option<String>, target: String, model: String) -> Response {
     let key = match authed(&app, &h) {
         Ok(k) => k,
-        Err(f) => return proxy::error(Kind::Responses, f.0, &f.1),
+        Err(f) => return ApiError::new(ApiFormat::Responses, f.0, &f.1).into_response(),
     };
     let owner = match &call_id {
         Some(c) => {
             let bound = app.sticky.lock().get(&call_binding(&key, c)).map(|(id, _)| id.clone());
             match bound.and_then(|id| app.account(&id)) {
                 Some(a) => Some(a),
-                None => return proxy::error(Kind::Responses, 404, "realtime call binding not found or expired"),
+                None => return ApiError::new(ApiFormat::Responses, 404, "realtime call binding not found or expired").into_response(),
             }
         }
         None => None,
@@ -778,7 +780,7 @@ async fn live(app: Arc<App>, h: HeaderMap, ws: WebSocketUpgrade, call_id: Option
         }
         let mut req = match handshake(&app, &acc, &h, Some(&ws_url(&target))) {
             Ok(r) => r,
-            Err(e) => return proxy::error(Kind::Responses, 500, &e),
+            Err(e) => return ApiError::new(ApiFormat::Responses, 500, &e).into_response(),
         };
         if let Some(p) = h.get(header::SEC_WEBSOCKET_PROTOCOL) {
             req.headers_mut().insert(header::SEC_WEBSOCKET_PROTOCOL, p.clone());
@@ -821,7 +823,7 @@ async fn live(app: Arc<App>, h: HeaderMap, ws: WebSocketUpgrade, call_id: Option
                 match retry_until(status, &v["error"]) {
                     Some(until) if until > 0 => acc.fail(until, format!("{status}: {msg}")),
                     Some(_) => {}
-                    None => return proxy::error(Kind::Responses, status, &msg),
+                    None => return ApiError::new(ApiFormat::Responses, status, &msg).into_response(),
                 }
                 last = Fail(status, msg);
             }
@@ -835,7 +837,7 @@ async fn live(app: Arc<App>, h: HeaderMap, ws: WebSocketUpgrade, call_id: Option
             }
         }
     }
-    proxy::error(Kind::Responses, last.0, &last.1)
+    ApiError::new(ApiFormat::Responses, last.0, &last.1).into_response()
 }
 
 async fn relay_live(app: Arc<App>, key: Arc<Key>, mut up: Link, mut client: WebSocket, mut model: String) {
@@ -928,7 +930,7 @@ async fn v1_live(
     ws: WebSocketUpgrade,
 ) -> Response {
     if matches!(call_id.as_str(), "." | "..") || !call_id.chars().all(|c| c.is_ascii_alphanumeric() || "._~-".contains(c)) {
-        return proxy::error(Kind::Responses, 404, "invalid realtime call id");
+        return ApiError::new(ApiFormat::Responses, 404, "invalid realtime call id").into_response();
     }
     let target = with_query(format!("{}/live/{call_id}", app.settings().realtime_base), q.as_deref());
     live(app, h, ws, Some(call_id), target, "realtime".into()).await
@@ -994,13 +996,13 @@ mod tests {
     async fn websocket_relays_events_after_failing_over_a_rate_limited_handshake() {
         let hits_b = Arc::new(AtomicUsize::new(0));
         let base = mock_upstream(hits_b.clone()).await;
-        let dir = std::env::temp_dir().join(format!("nanolb-ws-{}", crate::random_hex(4)));
+        let dir = std::env::temp_dir().join(format!("nanolb-ws-{}", crate::id::random_hex(4)));
         let app = App::new(Store::open(&dir).unwrap(), "admin".into());
         app.save_settings(Settings {
             upstream_base: base,
             ..Default::default()
         });
-        let far = crate::now_ms() + 86_400_000;
+        let far = crate::time::now_ms() + 86_400_000;
         for (id, priority) in [("a", 0), ("b", 1)] {
             app.upsert_account(AccountCfg {
                 id: id.into(),
@@ -1009,14 +1011,14 @@ mod tests {
                 priority,
                 chatgpt_account_id: format!("acct-{id}"),
                 expires_at: far,
-                last_refresh: crate::now_ms(),
+                last_refresh: crate::time::now_ms(),
                 ..Default::default()
             });
         }
         app.save_key(KeyCfg {
             id: "k".into(),
             name: "k".into(),
-            hash: crate::sha256_hex("nlb-test"),
+            hash: crate::id::sha256_hex("nlb-test"),
             prefix: "nlb-test".into(),
             accounts: vec![],
             models: vec![],
@@ -1047,6 +1049,6 @@ mod tests {
 
         assert_eq!(got, EVENTS.map(String::from));
         assert_eq!(hits_b.load(Ordering::SeqCst), 1);
-        assert!(!probe.account("a").unwrap().available(crate::now_ms()));
+        assert!(!probe.account("a").unwrap().available(crate::time::now_ms()));
     }
 }

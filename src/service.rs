@@ -54,7 +54,7 @@ pub fn install(host: &str, port: u16) -> Result<Value, String> {
     let exe = std::env::current_exe().and_then(|p| p.canonicalize()).map_err(|e| e.to_string())?;
     let port = port.to_string();
     if cfg!(target_os = "macos") {
-        let home = crate::home();
+        let home = crate::home::home();
         std::fs::create_dir_all(&home).map_err(|e| e.to_string())?;
         let log = home.join("nanolb.log");
         let plist = plist_path();
@@ -115,7 +115,7 @@ pub fn uninstall(purge: bool) -> Result<Value, String> {
             .output();
         let removed = std::fs::remove_file(&plist).is_ok();
         if purge {
-            let _ = std::fs::remove_dir_all(crate::home());
+            let _ = std::fs::remove_dir_all(crate::home::home());
         }
         return Ok(json!({"status": "uninstalled", "manager": "launchd", "plist_removed": removed, "data_purged": purge}));
     }

@@ -1,6 +1,9 @@
-use crate::proxy::{self, Inflight, Kind};
+use crate::proxy::Inflight;
+use crate::server::auth::api_key;
+use crate::server::error::{ApiError, ApiFormat};
 use crate::state::{Account, App, Key, Window};
-use crate::{codex, now_ms};
+use crate::codex;
+use crate::time::now_ms;
 use axum::Router;
 use axum::body::{Body, Bytes};
 use axum::extract::{Multipart, Path, State};
@@ -64,8 +67,8 @@ fn bind_file(app: &App, id: &str, account: &str) {
 }
 
 fn prelude(app: &App, h: &HeaderMap) -> Result<Arc<Key>, Box<Response>> {
-    let key = proxy::auth(app, h).ok_or_else(|| Box::new(proxy::error(Kind::Chat, 401, "invalid or missing api key")))?;
-    key.check(now_ms()).map_err(|e| Box::new(proxy::error(Kind::Chat, 429, &e)))?;
+    let key = api_key(app, h).ok_or_else(|| Box::new(ApiError::new(ApiFormat::Chat, 401, "invalid or missing api key").into_response()))?;
+    key.check(now_ms()).map_err(|e| Box::new(ApiError::new(ApiFormat::Chat, 429, &e).into_response()))?;
     Ok(key)
 }
 
@@ -208,9 +211,9 @@ fn failed(
     if status == 503
         && let Some(until) = app.next_available(provider, &key.cfg.accounts)
     {
-        return proxy::limited(Kind::Chat, provider, until);
+        return ApiError::limited(ApiFormat::Chat, provider, until).into_response();
     }
-    proxy::error(Kind::Chat, status, &msg)
+    ApiError::new(ApiFormat::Chat, status, &msg).into_response()
 }
 
 fn pass(sent: Sent) -> Response {
@@ -324,7 +327,7 @@ fn key_limits(key: &Key) -> Vec<Value> {
             out.push(json!({
                 "limit_type": ty, "limit_window": format!("{:?}", l.window).to_lowercase(),
                 "max_value": max, "current_value": cur, "remaining_value": max - cur,
-                "model_filter": null, "reset_at": reset.map(crate::ts_iso), "source": "api_key_limit",
+                "model_filter": null, "reset_at": reset.map(crate::time::ts_iso), "source": "api_key_limit",
             }));
         }
     }
@@ -484,7 +487,7 @@ fn part(data: &Bytes, file_name: &str, content_type: &str) -> Part {
 }
 
 fn bad_request(msg: &str) -> Response {
-    proxy::error(Kind::Chat, 400, msg)
+    ApiError::new(ApiFormat::Chat, 400, msg).into_response()
 }
 
 async fn transcribe(app: Arc<App>, h: HeaderMap, mp: Multipart, v1: bool) -> Response {
@@ -504,7 +507,7 @@ async fn transcribe(app: Arc<App>, h: HeaderMap, mp: Multipart, v1: bool) -> Res
                 return bad_request(&format!("model {m} is not supported, use {TRANSCRIBE_MODEL}"));
             }
             Some(m) if !key.allows_model(m) => {
-                return proxy::error(Kind::Chat, 403, &format!("model {m} not allowed for this key"));
+                return ApiError::new(ApiFormat::Chat, 403, &format!("model {m} not allowed for this key")).into_response();
             }
             _ => {}
         }
@@ -577,7 +580,7 @@ async fn images(app: Arc<App>, key: Arc<Key>, opts: Value, images: Vec<String>, 
         return bad_request(&format!("unsupported image model {model}, use a gpt-image-* model"));
     }
     if !key.allows_model(&model) {
-        return proxy::error(Kind::Chat, 403, &format!("model {model} not allowed for this key"));
+        return ApiError::new(ApiFormat::Chat, 403, &format!("model {model} not allowed for this key")).into_response();
     }
     let Some(prompt) = opts["prompt"].as_str().filter(|p| !p.is_empty()) else {
         return bad_request("prompt is required");
@@ -669,7 +672,7 @@ async fn images(app: Arc<App>, key: Arc<Key>, opts: Value, images: Vec<String>, 
     record(&app, &key, &acc.id, &model, "images", status, &usage, started, ttfb);
     match outcome {
         Ok(v) => axum::Json(v).into_response(),
-        Err(msg) => proxy::error(Kind::Chat, 502, &msg),
+        Err(msg) => ApiError::new(ApiFormat::Chat, 502, &msg).into_response(),
     }
 }
 
@@ -796,10 +799,10 @@ async fn embeddings(State(app): State<Arc<App>>, h: HeaderMap, body: Bytes) -> R
         ));
     }
     if !key.allows_model(&model) {
-        return proxy::error(Kind::Chat, 403, &format!("model {model} not allowed for this key"));
+        return ApiError::new(ApiFormat::Chat, 403, &format!("model {model} not allowed for this key")).into_response();
     }
     if !app.accounts.read().iter().any(|a| a.cfg.read().kind == "openrouter") {
-        return proxy::error(Kind::Chat, 503, "no openrouter accounts connected to serve embeddings");
+        return ApiError::new(ApiFormat::Chat, 503, "no openrouter accounts connected to serve embeddings").into_response();
     }
     let call = Call {
         provider: "openrouter",
@@ -843,7 +846,7 @@ mod tests {
     }
 
     fn setup(base: String, accounts: &[(&str, i64, bool)]) -> Arc<App> {
-        let dir = std::env::temp_dir().join(format!("nanolb-endpoints-{}", crate::random_hex(4)));
+        let dir = std::env::temp_dir().join(format!("nanolb-endpoints-{}", crate::id::random_hex(4)));
         let app = App::new(Store::open(&dir).unwrap(), "admin".into());
         app.save_settings(Settings {
             upstream_base: base,
@@ -856,7 +859,7 @@ mod tests {
         app.save_key(KeyCfg {
             id: "k".into(),
             name: "k".into(),
-            hash: crate::sha256_hex("nlb-test"),
+            hash: crate::id::sha256_hex("nlb-test"),
             prefix: "nlb-test".into(),
             accounts: vec![],
             models: vec![],
@@ -875,8 +878,8 @@ mod tests {
             enabled,
             priority,
             chatgpt_account_id: format!("acct-{id}"),
-            expires_at: crate::now_ms() + 86_400_000,
-            last_refresh: crate::now_ms(),
+            expires_at: crate::time::now_ms() + 86_400_000,
+            last_refresh: crate::time::now_ms(),
             ..Default::default()
         });
     }

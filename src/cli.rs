@@ -2,7 +2,7 @@ use crate::client::Client;
 use clap::{Args, Parser, Subcommand};
 use oauth2::{AuthUrl, ClientId, CsrfToken, PkceCodeChallenge, RedirectUrl, Scope, TokenUrl, basic::BasicClient};
 use serde_json::{Map, Value, json};
-use std::{collections::HashMap, path::PathBuf, sync::Arc, time::Duration};
+use std::{collections::HashMap, path::PathBuf, process::ExitCode, sync::Arc, time::Duration};
 use tokio::sync::mpsc;
 
 const AUTHORIZE_URL: &str = "https://auth.openai.com/oauth/authorize";
@@ -291,7 +291,46 @@ async fn show(c: &Client, op: &str, args: Value) -> Result<(), String> {
     Ok(())
 }
 
-pub async fn run(cmd: Cmd) -> Result<(), String> {
+pub async fn run() -> ExitCode {
+    let args = Cli::parse();
+    let res = match args.cmd {
+        Cmd::Serve { host, port } => {
+            init_tracing();
+            crate::server::serve(host, port).await.map_err(|e| e.to_string())
+        }
+        Cmd::Mcp => {
+            let client = Arc::new(Client::from_env());
+            let exec: crate::mcp::Exec = Arc::new(move |op, args| {
+                let c = client.clone();
+                Box::pin(async move { c.call(&op, args).await })
+            });
+            crate::mcp::serve_stdio(exec).await
+        }
+        cmd => dispatch(cmd).await,
+    };
+    match res {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("error: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn init_tracing() {
+    let filter = tracing_subscriber::EnvFilter::try_from_env("NANOLB_LOG").unwrap_or_else(|_| "info".into());
+    let fmt = tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stderr()))
+        .with_writer(std::io::stderr);
+    if std::env::var("NANOLB_LOG_FORMAT").is_ok_and(|f| f == "json") {
+        fmt.json().init();
+    } else {
+        fmt.init();
+    }
+}
+
+async fn dispatch(cmd: Cmd) -> Result<(), String> {
     let c = Client::from_env();
     match cmd {
         Cmd::Serve { .. } | Cmd::Mcp => Ok(()),
@@ -457,7 +496,7 @@ async fn login_device(c: &Client, label: Option<String>) -> Result<Value, String
 }
 
 fn running_pid() -> Option<u32> {
-    let pid: u32 = std::fs::read_to_string(crate::home().join("nanolb.pid"))
+    let pid: u32 = std::fs::read_to_string(crate::home::pid_path())
         .ok()?
         .trim()
         .parse()
@@ -476,7 +515,7 @@ async fn up(c: &Client, host: String, port: u16) -> Result<(), String> {
         print(&json!({ "status": "already running", "pid": pid, "url": c.url }));
         return Ok(());
     }
-    let home = crate::home();
+    let home = crate::home::home();
     std::fs::create_dir_all(&home).map_err(|e| e.to_string())?;
     let log_path = home.join("nanolb.log");
     let log = std::fs::OpenOptions::new()

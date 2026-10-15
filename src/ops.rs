@@ -1,14 +1,9 @@
 use crate::admin::{account_or_err, parse_since, s};
 use crate::codex;
 use crate::state::{App, Warmup};
-use crate::{now_ms, ts_iso};
-use axum::Router;
+use crate::time::{now_ms, ts_iso};
 use serde_json::{Value, json};
 use std::sync::Arc;
-
-pub fn routes() -> Router<Arc<App>> {
-    Router::new()
-}
 
 pub fn sessions_list(app: &App, a: &Value) -> Value {
     let key = a["key"].as_str();
@@ -83,7 +78,7 @@ pub async fn reset_credits_list(app: &Arc<App>, a: &Value) -> Result<Value, Stri
 }
 
 fn uuid_v4() -> String {
-    let h = crate::random_hex(16);
+    let h = crate::id::random_hex(16);
     format!("{}-{}-4{}-a{}-{}", &h[0..8], &h[8..12], &h[13..16], &h[17..20], &h[20..32])
 }
 

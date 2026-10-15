@@ -148,7 +148,7 @@ impl Store {
             .query_map([since_ms], |r| {
                 let g: rusqlite::types::Value = r.get(0)?;
                 let group = match g {
-                    rusqlite::types::Value::Integer(i) => Value::from(crate::ts_iso(i)),
+                    rusqlite::types::Value::Integer(i) => Value::from(crate::time::ts_iso(i)),
                     rusqlite::types::Value::Text(s) => Value::from(s),
                     _ => Value::Null,
                 };
@@ -157,7 +157,7 @@ impl Store {
                     "cached_tokens": r.get::<_, i64>(3)?, "output_tokens": r.get::<_, i64>(4)?,
                     "reasoning_tokens": r.get::<_, i64>(5)?, "cost_usd": r.get::<_, f64>(6)?,
                     "errors": r.get::<_, i64>(7)?, "avg_latency_ms": r.get::<_, i64>(8)?,
-                    "avg_ttfb_ms": r.get::<_, i64>(9)?, "last_at": crate::ts_iso(r.get::<_, i64>(10)?),
+                    "avg_ttfb_ms": r.get::<_, i64>(9)?, "last_at": crate::time::ts_iso(r.get::<_, i64>(10)?),
                 }))
             })
             .unwrap()
@@ -203,7 +203,7 @@ impl Store {
                 o.insert(
                     (*name).into(),
                     match r.get::<_, rusqlite::types::Value>(i)? {
-                        rusqlite::types::Value::Integer(v) if *name == "bucket" => Value::from(crate::ts_iso(v)),
+                        rusqlite::types::Value::Integer(v) if *name == "bucket" => Value::from(crate::time::ts_iso(v)),
                         rusqlite::types::Value::Integer(v) => Value::from(v),
                         rusqlite::types::Value::Real(v) => Value::from((v * 10_000.0).round() / 10_000.0),
                         rusqlite::types::Value::Text(v) => Value::from(v),
@@ -423,9 +423,9 @@ mod tests {
 
     #[test]
     fn analytics_latency_percentiles() {
-        let path = std::env::temp_dir().join(format!("nanolb-test-{}.db", crate::random_hex(6)));
+        let path = std::env::temp_dir().join(format!("nanolb-test-{}.db", crate::id::random_hex(6)));
         let store = Store::open(&path).unwrap();
-        let now = crate::now_ms();
+        let now = crate::time::now_ms();
         for i in 1..=100u64 {
             store.record(Usage {
                 ts: now,

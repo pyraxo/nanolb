@@ -1,6 +1,6 @@
 use crate::state::{Account, AccountCfg, App};
 use crate::store::Usage;
-use crate::{now_ms, ts_iso};
+use crate::time::{now_ms, ts_iso};
 use axum::http::HeaderMap;
 use base64::Engine;
 use futures_util::StreamExt;
@@ -75,7 +75,7 @@ pub fn account_from_tokens(id_token: &str, access: &str, refresh: &str, label: O
     }
     let exp = claims(access).exp;
     Ok(AccountCfg {
-        id: crate::sha256_hex(&format!("{}:{}", c.account_id, c.email))[..12].to_string(),
+        id: crate::id::sha256_hex(&format!("{}:{}", c.account_id, c.email))[..12].to_string(),
         kind: "codex".into(),
         label: label.map_or_else(|| c.email.clone(), str::to_string),
         email: c.email,
@@ -467,7 +467,7 @@ pub async fn device_login_start(app: Arc<App>, label: Option<String>) -> Result<
         .and_then(|s| s.parse().ok())
         .or(v["interval"].as_u64())
         .unwrap_or(5);
-    let login_id = crate::random_hex(8);
+    let login_id = crate::id::random_hex(8);
     let expires = now_ms() + 15 * 60_000;
     app.logins.lock().insert(login_id.clone(), json!({"status": "pending"}));
     let (app2, id2, code2) = (app.clone(), login_id.clone(), user_code.clone());

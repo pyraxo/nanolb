@@ -11,7 +11,7 @@ impl Client {
         let url = std::env::var("NANOLB_URL").unwrap_or_else(|_| "http://127.0.0.1:2455".into());
         let token = std::env::var("NANOLB_ADMIN_TOKEN")
             .ok()
-            .or_else(|| std::fs::read_to_string(crate::home().join("admin_token")).ok())
+            .or_else(|| std::fs::read_to_string(crate::home::admin_token_path()).ok())
             .unwrap_or_default()
             .trim()
             .to_string();

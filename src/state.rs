@@ -1,5 +1,5 @@
-use crate::now_ms;
 use crate::store::{Store, Usage};
+use crate::time::now_ms;
 use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -142,7 +142,7 @@ impl Account {
     }
 
     pub fn fail(&self, until: i64, msg: String) {
-        tracing::warn!(account = %self.id, until = %crate::ts_iso(until), error = %msg, "account cooling down");
+        tracing::warn!(account = %self.id, until = %crate::time::ts_iso(until), error = %msg, "account cooling down");
         self.cooldown_until.store(until, Relaxed);
         *self.last_error.lock() = Some((now_ms(), msg));
     }
@@ -155,16 +155,16 @@ impl Account {
         serde_json::json!({
             "id": c.id, "kind": c.kind, "email": c.email, "label": c.label, "plan": c.plan,
             "enabled": c.enabled, "priority": c.priority, "available": self.available(now),
-            "cooldown_until": (cd > now).then(|| crate::ts_iso(cd)),
+            "cooldown_until": (cd > now).then(|| crate::time::ts_iso(cd)),
             "inflight": self.inflight.load(Relaxed),
-            "token_expires_at": crate::ts_iso(c.expires_at), "last_refresh": crate::ts_iso(c.last_refresh),
+            "token_expires_at": crate::time::ts_iso(c.expires_at), "last_refresh": crate::time::ts_iso(c.last_refresh),
             "rate_limit": rl_view(&self.rl.lock()),
             "latency": {
                 "ttfb_ewma_ms": hl.ttfb_ms.round(),
                 "error_rate": (hl.error_rate(now) * 1000.0).round() / 1000.0,
             },
-            "last_error": self.last_error.lock().as_ref().map(|(t, m)| serde_json::json!({"at": crate::ts_iso(*t), "message": m})),
-            "warmup": c.warmup, "created_at": crate::ts_iso(c.created_at),
+            "last_error": self.last_error.lock().as_ref().map(|(t, m)| serde_json::json!({"at": crate::time::ts_iso(*t), "message": m})),
+            "warmup": c.warmup, "created_at": crate::time::ts_iso(c.created_at),
         })
     }
 }
@@ -179,7 +179,7 @@ fn plan_weights(plan: &str) -> [f64; 2] {
 }
 
 fn rl_view(r: &RateLimit) -> Value {
-    let iso = |t: i64| (t > 0).then(|| crate::ts_iso(t));
+    let iso = |t: i64| (t > 0).then(|| crate::time::ts_iso(t));
     serde_json::json!({
         "primary": {"used_percent": r.primary_used, "window_minutes": r.primary_window_min, "resets_at": iso(r.primary_reset_at)},
         "secondary": {"used_percent": r.secondary_used, "window_minutes": r.secondary_window_min, "resets_at": iso(r.secondary_reset_at)},
@@ -304,8 +304,8 @@ impl Key {
         };
         serde_json::json!({
             "id": c.id, "name": c.name, "prefix": c.prefix, "accounts": c.accounts, "models": c.models,
-            "limits": c.limits, "enabled": c.enabled, "expires_at": c.expires_at.map(crate::ts_iso),
-            "created_at": crate::ts_iso(c.created_at), "usage": usage,
+            "limits": c.limits, "enabled": c.enabled, "expires_at": c.expires_at.map(crate::time::ts_iso),
+            "created_at": crate::time::ts_iso(c.created_at), "usage": usage,
         })
     }
 }
@@ -569,7 +569,7 @@ impl App {
     }
 
     pub fn key_by_secret(&self, secret: &str) -> Option<Arc<Key>> {
-        self.keys.read().get(&crate::sha256_hex(secret)).cloned()
+        self.keys.read().get(&crate::id::sha256_hex(secret)).cloned()
     }
 
     pub fn save_key(&self, cfg: KeyCfg) -> Arc<Key> {
@@ -769,7 +769,7 @@ mod tests {
     use super::*;
 
     fn app_with(strategy: Strategy, accs: &[(&str, f64, i64)]) -> Arc<App> {
-        let dir = std::env::temp_dir().join(format!("nanolb-test-{}-{}", std::process::id(), crate::random_hex(4)));
+        let dir = std::env::temp_dir().join(format!("nanolb-test-{}-{}", std::process::id(), crate::id::random_hex(4)));
         let app = App::new(Store::open(&dir).unwrap(), String::new());
         app.save_settings(Settings {
             strategy,

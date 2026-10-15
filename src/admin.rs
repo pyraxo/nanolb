@@ -1,33 +1,18 @@
 use crate::codex;
+use crate::server::auth::{admin_denied, is_admin};
 use crate::state::{App, KeyCfg, Limit, Settings, Warmup};
-use crate::{now_ms, ts_iso};
+use crate::time::{now_ms, ts_iso};
 use axum::body::Bytes;
-use axum::extract::{Path, Query, Request, State};
-use axum::http::{HeaderMap, StatusCode, header};
-use axum::middleware::Next;
+use axum::extract::{Path, Query, State};
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::Ordering::Relaxed;
 
-fn authorized(app: &App, h: &HeaderMap) -> bool {
-    let token = h
-        .get(header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "));
-    token.is_some_and(|t| !app.admin_token.is_empty() && crate::sha256_hex(t) == crate::sha256_hex(&app.admin_token))
-}
-
 fn err(status: StatusCode, msg: &str) -> Response {
     (status, axum::Json(json!({"error": {"message": msg}}))).into_response()
-}
-
-pub async fn guard(State(app): State<Arc<App>>, req: Request, next: Next) -> Response {
-    if !authorized(&app, req.headers()) {
-        return err(StatusCode::UNAUTHORIZED, "invalid admin token");
-    }
-    next.run(req).await
 }
 
 pub async fn http(
@@ -37,8 +22,8 @@ pub async fn http(
     Query(q): Query<HashMap<String, String>>,
     body: Bytes,
 ) -> Response {
-    if !authorized(&app, &h) {
-        return err(StatusCode::UNAUTHORIZED, "invalid admin token");
+    if !is_admin(&app, &h) {
+        return admin_denied();
     }
     let args = if body.is_empty() {
         Value::Object(
@@ -171,7 +156,7 @@ pub async fn op_call(app: &Arc<App>, op: &str, a: Value) -> Result<Value, String
                 .unwrap_or("openrouter")
                 .to_string();
             let cfg = crate::state::AccountCfg {
-                id: crate::sha256_hex(key)[..12].to_string(),
+                id: crate::id::sha256_hex(key)[..12].to_string(),
                 kind: "openrouter".into(),
                 label,
                 plan: "openrouter".into(),
@@ -238,11 +223,11 @@ pub async fn op_call(app: &Arc<App>, op: &str, a: Value) -> Result<Value, String
         "account_warmup" => codex::warmup(app, &account_or_err(app, &a)?).await,
         "keys_list" => json!(app.keys.read().values().map(|k| k.view()).collect::<Vec<_>>()),
         "key_create" => {
-            let secret = format!("nlb-{}", crate::random_hex(24));
+            let secret = format!("nlb-{}", crate::id::random_hex(24));
             let mut cfg = KeyCfg {
-                id: crate::random_hex(6),
+                id: crate::id::random_hex(6),
                 name: s(&a, "name")?.into(),
-                hash: crate::sha256_hex(&secret),
+                hash: crate::id::sha256_hex(&secret),
                 prefix: secret[..12].into(),
                 accounts: vec![],
                 models: vec![],

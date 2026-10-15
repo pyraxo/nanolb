@@ -209,7 +209,10 @@ def capture(dest):
     if dest.exists():
         shutil.rmtree(dest)
     dest.mkdir(parents=True)
-    subprocess.run(["cargo", "build", "--quiet"], cwd=ROOT, check=True)
+    b = subprocess.run(["cargo", "build", "--quiet"], cwd=ROOT, capture_output=True, text=True)
+    if b.returncode:
+        sys.stderr.write(b.stderr)
+        raise SystemExit("cargo build failed")
     home = Path(tempfile.mkdtemp(prefix="nanolb-compat-"))
     try:
         env = base_env(home)
