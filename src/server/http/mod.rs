@@ -446,6 +446,9 @@ async fn handle(app: Arc<App>, kind: ApiFormat, h: HeaderMap, body: Bytes) -> Re
             Err(e) => return ApiError::from((kind, e)).into_response(),
         },
     };
+    if !up.is_object() {
+        return ApiError::new(kind, 400, "invalid json: expected an object").into_response();
+    }
     let model = canonical_model(up["model"].as_str().unwrap_or(&requested)).to_string();
     if !key.allows_model(&requested) && !key.allows_model(&model) {
         return ApiError::new(kind, 403, &format!("model {requested} not allowed for this key")).into_response();

@@ -671,8 +671,14 @@
     "status": 503
   },
   "POST /backend-api/codex/responses array-body": {
-    "body": "RemoteDisconnected",
-    "status": 0
+    "body": {
+      "error": {
+        "code": null,
+        "message": "invalid json: expected an object",
+        "type": "api_error"
+      }
+    },
+    "status": 400
   },
   "POST /backend-api/codex/responses empty-object": {
     "body": {
@@ -935,8 +941,14 @@
     "status": 503
   },
   "POST /v1/responses array-body": {
-    "body": "RemoteDisconnected",
-    "status": 0
+    "body": {
+      "error": {
+        "code": null,
+        "message": "invalid json: expected an object",
+        "type": "api_error"
+      }
+    },
+    "status": 400
   },
   "POST /v1/responses empty-object": {
     "body": {
