@@ -593,3 +593,27 @@ pub fn warmup_due(cron: &str, last_fired: i64, now: chrono::DateTime<chrono::Loc
     };
     c.find_next_occurrence(&since, false).is_ok_and(|t| t <= now)
 }
+
+pub async fn wham(app: &App, a: &Account, method: reqwest::Method, path: &str, body: Option<Value>) -> Result<Value, String> {
+    let (token, acct) = {
+        let c = a.cfg.read();
+        (c.access_token.clone(), c.chatgpt_account_id.clone())
+    };
+    let mut rb = app
+        .http
+        .request(method, format!("{}/wham/{path}", app.settings().upstream_base))
+        .bearer_auth(token)
+        .header("chatgpt-account-id", acct)
+        .header("accept", "application/json")
+        .timeout(Duration::from_secs(15));
+    if let Some(b) = body {
+        rb = rb.json(&b);
+    }
+    let res = rb.send().await.map_err(|e| e.to_string())?;
+    let status = res.status();
+    let text = res.text().await.map_err(|e| e.to_string())?;
+    if !status.is_success() {
+        return Err(format!("wham/{path} {status}: {text}"));
+    }
+    serde_json::from_str(&text).map_err(|e| format!("wham/{path}: invalid json: {e}"))
+}

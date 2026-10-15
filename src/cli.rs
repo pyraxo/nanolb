@@ -67,6 +67,34 @@ pub enum Cmd {
         cmd: SettingsCmd,
     },
     Models,
+    Sessions {
+        #[command(subcommand)]
+        cmd: SessionsCmd,
+    },
+    ResetCredits {
+        #[command(subcommand)]
+        cmd: ResetCreditsCmd,
+    },
+    Plan {
+        #[arg(long)]
+        work_start: Option<String>,
+        #[arg(long)]
+        lookback: Option<String>,
+        #[arg(long)]
+        apply: bool,
+    },
+    Analytics {
+        #[arg(long, default_value = "7d")]
+        since: String,
+        #[arg(long, default_value = "all")]
+        view: String,
+        #[arg(long, default_value = "account")]
+        by: String,
+        #[arg(long, default_value = "day")]
+        bucket: String,
+        #[arg(long, default_value_t = 10)]
+        limit: u32,
+    },
     Call {
         op: String,
         json: Option<String>,
@@ -177,6 +205,41 @@ pub enum KeysCmd {
 }
 
 #[derive(Subcommand)]
+pub enum ResetCreditsCmd {
+    Ls {
+        account: String,
+    },
+    Consume {
+        account: String,
+        #[arg(long)]
+        credit: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum SessionsCmd {
+    Ls {
+        #[arg(long)]
+        key: Option<String>,
+        #[arg(long)]
+        account: Option<String>,
+        #[arg(long, default_value_t = 100)]
+        limit: u32,
+    },
+    Rm {
+        key: String,
+    },
+    Purge {
+        #[arg(long)]
+        all: bool,
+        #[arg(long)]
+        account: Option<String>,
+        #[arg(long)]
+        older_than: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
 pub enum SettingsCmd {
     Get,
     Set { key: String, value: String },
@@ -263,6 +326,52 @@ pub async fn run(cmd: Cmd) -> Result<(), String> {
             show(&c, "settings_update", json!({ key: value })).await
         }
         Cmd::Models => show(&c, "models", json!({})).await,
+        Cmd::ResetCredits { cmd } => match cmd {
+            ResetCreditsCmd::Ls { account } => show(&c, "reset_credits_list", json!({ "id": id(&account) })).await,
+            ResetCreditsCmd::Consume { account, credit } => {
+                show(&c, "reset_credits_consume", json!({ "id": id(&account), "credit_id": credit })).await
+            }
+        },
+        Cmd::Plan {
+            work_start,
+            lookback,
+            apply,
+        } => {
+            show(
+                &c,
+                "plan",
+                json!({ "work_start": work_start, "lookback": lookback, "apply": apply }),
+            )
+            .await
+        }
+        Cmd::Analytics {
+            since,
+            view,
+            by,
+            bucket,
+            limit,
+        } => {
+            show(
+                &c,
+                "analytics",
+                json!({ "since": since, "view": view, "by": by, "bucket": bucket, "limit": limit }),
+            )
+            .await
+        }
+        Cmd::Sessions { cmd } => match cmd {
+            SessionsCmd::Ls { key, account, limit } => {
+                show(&c, "sessions_list", json!({ "key": key, "account": account, "limit": limit })).await
+            }
+            SessionsCmd::Rm { key } => show(&c, "session_delete", json!({ "key": key })).await,
+            SessionsCmd::Purge { all, account, older_than } => {
+                show(
+                    &c,
+                    "sessions_purge",
+                    json!({ "all": all, "account": account, "older_than": older_than }),
+                )
+                .await
+            }
+        },
         Cmd::Call { op, json } => {
             let args = match json {
                 Some(j) => serde_json::from_str(&j).map_err(|e| format!("invalid JSON: {e}"))?,

@@ -61,7 +61,7 @@ pub async fn http(
     }
 }
 
-fn s<'a>(a: &'a Value, k: &str) -> Result<&'a str, String> {
+pub(crate) fn s<'a>(a: &'a Value, k: &str) -> Result<&'a str, String> {
     a[k].as_str().ok_or_else(|| format!("missing string arg `{k}`"))
 }
 
@@ -76,7 +76,7 @@ fn parse_time(v: &Value) -> Result<Option<i64>, String> {
     }
 }
 
-fn parse_since(v: &Value) -> Result<i64, String> {
+pub(crate) fn parse_since(v: &Value) -> Result<i64, String> {
     let t = v.as_str().unwrap_or("24h");
     let num = |suffix: char, ms: i64| {
         t.strip_suffix(suffix)
@@ -90,7 +90,7 @@ fn parse_since(v: &Value) -> Result<i64, String> {
         .unwrap_or_else(|| parse_time(v).map(|t| t.unwrap_or(0)))
 }
 
-fn account_or_err(app: &App, a: &Value) -> Result<Arc<crate::state::Account>, String> {
+pub(crate) fn account_or_err(app: &App, a: &Value) -> Result<Arc<crate::state::Account>, String> {
     let id = s(a, "id")?;
     app.account(id).ok_or_else(|| format!("account {id} not found"))
 }
@@ -302,6 +302,13 @@ pub async fn op_call(app: &Arc<App>, op: &str, a: Value) -> Result<Value, String
                 .map(|(m, ctx)| json!({"provider": App::provider_for(&m), "id": m, "context_window": ctx}))
                 .collect::<Vec<_>>()
         ),
+        "sessions_list" => crate::ops::sessions_list(app, &a),
+        "session_delete" => crate::ops::session_delete(app, &a)?,
+        "sessions_purge" => crate::ops::sessions_purge(app, &a)?,
+        "reset_credits_list" => crate::ops::reset_credits_list(app, &a).await?,
+        "reset_credits_consume" => crate::ops::reset_credits_consume(app, &a).await?,
+        "plan" => crate::ops::plan(app, &a)?,
+        "analytics" => crate::ops::analytics(app, &a)?,
         _ => return Err(format!("unknown op `{op}`")),
     })
 }

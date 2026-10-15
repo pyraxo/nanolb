@@ -239,6 +239,23 @@ nanolb settings set sticky false
 
 `--since` takes `1h`, `24h`, `7d`, `30d` or an RFC3339 time. `settings set <key> <value>` parses the value as JSON, and uses a plain string if the parse fails. For example: `nanolb settings set max_attempts 6`.
 
+### Analytics, planner, sessions and reset credits
+
+```sh
+nanolb analytics --since 7d --view all|series|latency|errors|cache|top|utilization --by account|model|key --bucket hour|day
+nanolb plan [--work-start 09:00] [--lookback 6h] [--apply]
+nanolb sessions ls [--key <substring>] [--account <id>] [--limit 100]
+nanolb sessions rm <key>
+nanolb sessions purge --all | --account <id> | --older-than 7d
+nanolb reset-credits ls <account>
+nanolb reset-credits consume <account> [--credit <id>]
+```
+
+- `analytics` prints JSON. `latency` gives p50 and p95 of latency and TTFB (successful requests only). `cache` gives `cached/input`. `utilization` gives each account's share of tokens in each bucket.
+- `plan` projects when each rate-limit window runs out, from the recent token rate in the `usage` table and the live `rate_limit`. It also recommends a daily warmup cron for each Codex account. The crons are spread over the window length from `--work-start`. `--apply` writes them as the account warmups.
+- `sessions` manages the sticky pins. A removed pin is also removed from SQLite.
+- `reset-credits consume` spends one banked reset credit. Without `--credit` it uses the available credit that expires first.
+
 ### Strategies
 
 The strategy picks the account for a new conversation. A sticky conversation keeps its account until that account is limited or failing.
@@ -315,6 +332,13 @@ curl -s -X POST http://127.0.0.1:2455/admin/status -H "Authorization: Bearer $TO
 | `settings_get` | none | settings |
 | `settings_update` | any settings field | settings |
 | `models` | none | list of `{id, context_window}` |
+| `sessions_list` | `key?` (substring), `account?`, `limit?` (default 100) | `[{key, account, last_used}]` |
+| `session_delete` | `key` | `{removed}` |
+| `sessions_purge` | `all?`, `account?`, `older_than?` (one at least) | `{removed}` |
+| `reset_credits_list` | `id` (account) | `{credits, available_count}` |
+| `reset_credits_consume` | `id` (account), `credit_id?` | upstream result and `account` |
+| `plan` | `work_start?`, `lookback?`, `apply?` | per account: `windows` with `exhausts_at`, `recommended_warmup` |
+| `analytics` | `since?` (default `7d`), `view?` (default `all`), `by?`, `bucket?`, `limit?` | rows for the view |
 
 An account object has `id`, `kind` (`codex` or `openrouter`), `email`, `label`, `plan`, `enabled`, `priority`, `available`, `cooldown_until`, `inflight`, `rate_limit`, `last_error` and `warmup`.
 

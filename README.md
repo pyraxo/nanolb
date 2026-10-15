@@ -25,6 +25,10 @@ nanolb login --browser                           # or a browser PKCE login
 nanolb accounts add-openrouter sk-or-...         # optional: OpenRouter upstream
 nanolb keys create hermes                        # prints the nlb-... key one time
 nanolb codex-config --key nlb-...                # prints client config snippets
+nanolb analytics --since 7d                      # latency, errors, cache hits, top keys and models
+nanolb plan --apply                              # project quota exhaustion, set staggered warmups
+nanolb sessions ls                               # sticky pins; also sessions rm and sessions purge
+nanolb reset-credits ls <account>                # banked reset credits; also reset-credits consume
 ```
 
 Do not use `nanolb accounts import` on the `~/.codex/auth.json` that your Codex CLI still uses. A refresh token can be used one time only. When nanolb refreshes the token, the Codex CLI copy stops working. Use `nanolb login` to give nanolb its own session.

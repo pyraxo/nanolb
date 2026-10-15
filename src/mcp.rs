@@ -191,6 +191,74 @@ static TOOLS: LazyLock<Vec<Tool>> = LazyLock::new(|| {
             ),
         ),
         ("models", "List the model ids served to clients.", none),
+        (
+            "reset_credits_list",
+            "List the rate-limit reset credits banked on a Codex account: {credits: [{id, status, expires_at, ...}], available_count}.",
+            id("Account id"),
+        ),
+        (
+            "reset_credits_consume",
+            "Spend one rate-limit reset credit on a Codex account to reset its usage windows now. Without credit_id the available credit that expires first is used. Returns the upstream result and the refreshed account.",
+            schema(
+                json!({"id": {"type": "string", "description": "Account id"}, "credit_id": {"type": "string"}}),
+                &["id"],
+            ),
+        ),
+        (
+            "plan",
+            "Quota planner. For each Codex account, projects when each rate-limit window will be exhausted from recent usage and recommends a daily warmup cron so that windows are staggered and reset at useful times during the working day. With apply=true the recommended cron is written to each account's warmup schedule.",
+            schema(
+                json!({
+                    "work_start": {"type": "string", "description": "Start of the working day, HH:MM local time (default 09:00)"},
+                    "lookback": {"type": "string", "description": "Recent-usage span for the burn rate, such as 2h or 6h (default 6h)"},
+                    "apply": {"type": "boolean", "description": "Write the recommended warmup cron to the accounts"}
+                }),
+                &[],
+            ),
+        ),
+        (
+            "analytics",
+            "Usage analytics from the request log. Views: series (time series per account, model or key), latency (p50 and p95 latency and TTFB), errors (error rate), cache (cached/input token ratio), top (top keys and models by tokens and cost), utilization (each account's share of tokens per bucket), all (default: every view).",
+            schema(
+                json!({
+                    "since": {"type": "string", "description": "1h, 24h, 7d, 30d or an RFC3339 timestamp (default 7d)"},
+                    "view": {"type": "string", "enum": ["series", "latency", "errors", "cache", "top", "utilization", "all"]},
+                    "by": {"type": "string", "enum": ["account", "model", "key", "all"], "description": "Grouping dimension (default account)"},
+                    "bucket": {"type": "string", "enum": ["hour", "day"], "description": "Time bucket (default day)"},
+                    "limit": {"type": "integer", "description": "Rows for the top view (default 10)"}
+                }),
+                &[],
+            ),
+        ),
+        (
+            "sessions_list",
+            "List sticky-session pins (conversation key, pinned account, last used), newest first. Filter by key substring or account id.",
+            schema(
+                json!({
+                    "key": {"type": "string", "description": "Substring of the session key"},
+                    "account": {"type": "string", "description": "Account id"},
+                    "limit": {"type": "integer", "description": "Default 100"}
+                }),
+                &[],
+            ),
+        ),
+        (
+            "session_delete",
+            "Delete one sticky-session pin so the conversation is routed fresh on its next request.",
+            schema(json!({"key": {"type": "string"}}), &["key"]),
+        ),
+        (
+            "sessions_purge",
+            "Delete many sticky-session pins: all, those pinned to one account, or those not used for longer than older_than. At least one criterion is required.",
+            schema(
+                json!({
+                    "all": {"type": "boolean"},
+                    "account": {"type": "string", "description": "Account id"},
+                    "older_than": {"type": "string", "description": "Age such as 30m, 12h or 7d"}
+                }),
+                &[],
+            ),
+        ),
     ];
     table
         .into_iter()
