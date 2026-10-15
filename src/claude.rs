@@ -399,18 +399,21 @@ pub async fn handle(app: Arc<App>, key: Arc<Key>, h: HeaderMap, mut req: Value, 
             }
         }
         if status >= 400 {
-            let until = match status {
-                429 => Some(limited_until(res.headers())),
-                401 => Some(now_ms() + 300_000),
-                500.. => Some(now_ms() + 5_000),
-                _ => None,
-            };
+            let limit_reset = limited_until(res.headers());
             let text = res.text().await.unwrap_or_default();
             let msg = serde_json::from_str::<Value>(&text)
                 .ok()
                 .and_then(|v| v["error"]["message"].as_str().map(str::to_string))
                 .unwrap_or_else(|| text.chars().take(500).collect());
+            let until = match status {
+                429 => Some(limit_reset),
+                401 => Some(now_ms() + 300_000),
+                400 if msg.contains("extra usage") => Some(now_ms() + 600_000),
+                500.. => Some(now_ms() + 5_000),
+                _ => None,
+            };
             let Some(until) = until else {
+                tracing::warn!(account = %acc.id, status, error = %msg, %model, "claude upstream rejected request");
                 app.record(
                     Some(&key),
                     crate::codex::usage_row(&key.cfg.id, &acc.id, &model, "anthropic", status, &Value::Null, started, now_ms()),

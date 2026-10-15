@@ -196,7 +196,10 @@ async fn send(
                 .or(v["detail"].as_str())
                 .map_or_else(|| text.chars().take(500).collect(), str::to_string);
             match classify(status, &v["error"]) {
-                Failure::Client => return Err((status, msg)),
+                Failure::Client => {
+                    tracing::warn!(account = %acc.id, status, error = %msg, "upstream rejected request");
+                    return Err((status, msg));
+                }
                 Failure::Retry(until) => {
                     if until > 0 {
                         acc.fail(until, format!("{status}: {msg}"));
