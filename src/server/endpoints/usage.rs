@@ -2,8 +2,8 @@ use super::prelude;
 use crate::app::{Account, App, Key, Provider, Window};
 use crate::server::error::ApiError;
 use crate::time::{now_ms, ts_iso};
+use axum::Extension;
 use axum::extract::State;
-use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -59,8 +59,8 @@ fn pool(app: &App, key: &Key) -> (Value, Value, bool, String) {
     )
 }
 
-pub(super) async fn pool_usage(State(app): State<Arc<App>>, h: HeaderMap) -> Result<Response, ApiError> {
-    let key = prelude(&app, &h)?;
+pub(super) async fn pool_usage(State(app): State<Arc<App>>, Extension(key): Extension<Arc<Key>>) -> Result<Response, ApiError> {
+    prelude(&key)?;
     let (primary, secondary, allowed, plan) = pool(&app, &key);
     Ok(axum::Json(json!({
         "plan_type": plan,
@@ -105,8 +105,8 @@ fn key_limits(key: &Key) -> Vec<Value> {
     out
 }
 
-pub(super) async fn key_usage(State(app): State<Arc<App>>, h: HeaderMap) -> Result<Response, ApiError> {
-    let key = prelude(&app, &h)?;
+pub(super) async fn key_usage(State(app): State<Arc<App>>, Extension(key): Extension<Arc<Key>>) -> Result<Response, ApiError> {
+    prelude(&key)?;
     let total = key.view()["usage"]["total"].clone();
     let cached = app.store.usage_summary(0, "key").unwrap_or_default();
     let cached = cached

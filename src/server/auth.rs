@@ -15,7 +15,7 @@ fn bearer(h: &HeaderMap) -> Option<&str> {
         .and_then(|v| v.strip_prefix("Bearer "))
 }
 
-pub(crate) fn api_key(app: &App, h: &HeaderMap) -> Option<Arc<Key>> {
+fn api_key(app: &App, h: &HeaderMap) -> Option<Arc<Key>> {
     let secret = bearer(h).or_else(|| h.get("x-api-key").and_then(|v| v.to_str().ok()))?;
     app.keys.by_secret(secret.trim())
 }
@@ -28,8 +28,8 @@ pub(crate) fn admin_denied() -> Response {
     (StatusCode::UNAUTHORIZED, Json(json!({"error": {"message": "invalid admin token"}}))).into_response()
 }
 
-pub(crate) async fn require_key(State(app): State<Arc<App>>, req: Request, next: Next) -> Response {
-    if api_key(&app, req.headers()).is_none() {
+pub(crate) async fn require_key(State(app): State<Arc<App>>, mut req: Request, next: Next) -> Response {
+    let Some(key) = api_key(&app, req.headers()) else {
         let p = req.uri().path();
         let format = if p.starts_with("/v1/messages") || req.headers().contains_key("anthropic-version") {
             ApiFormat::Anthropic
@@ -39,7 +39,8 @@ pub(crate) async fn require_key(State(app): State<Arc<App>>, req: Request, next:
             ApiFormat::Chat
         };
         return ApiError::unauthorized(format).into_response();
-    }
+    };
+    req.extensions_mut().insert(key);
     next.run(req).await
 }
 

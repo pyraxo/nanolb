@@ -1,19 +1,23 @@
 use super::forward::{Call, JSON, forward, json_response, json_shape};
 use super::{Req, bad_request, prelude, require_model};
-use crate::app::{App, Provider};
+use crate::app::{App, Key, Provider};
 use crate::server::error::{ApiError, ApiFormat};
 use crate::store::Endpoint;
 use crate::time::now_ms;
+use axum::Extension;
 use axum::body::Bytes;
 use axum::extract::State;
-use axum::http::HeaderMap;
 use axum::response::Response;
 use serde_json::{Value, json};
 use std::sync::Arc;
 
-pub(super) async fn embeddings(State(app): State<Arc<App>>, h: HeaderMap, body: Bytes) -> Result<Response, ApiError> {
+pub(super) async fn embeddings(
+    State(app): State<Arc<App>>,
+    Extension(key): Extension<Arc<Key>>,
+    body: Bytes,
+) -> Result<Response, ApiError> {
     let started = now_ms();
-    let key = prelude(&app, &h)?;
+    prelude(&key)?;
     let parsed: Value = serde_json::from_slice(&body).map_err(|e| bad_request(format!("invalid json: {e}")))?;
     let model = parsed["model"].as_str().unwrap_or_default();
     if !model.contains('/') {

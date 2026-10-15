@@ -8,6 +8,7 @@ use crate::server::error::{ApiError, ApiFormat};
 use crate::store::{Endpoint, Usage, UsageMeta};
 use crate::time::now_ms;
 use crate::upstream::{self, UpstreamError, codex};
+use axum::Extension;
 use axum::extract::ws::{self, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, RawQuery, State};
 use axum::http::{HeaderMap, header};
@@ -46,13 +47,14 @@ fn owner(app: &App, key: &Key, call_id: Option<&str>) -> Result<Option<Arc<Accou
 
 async fn live(
     app: Arc<App>,
+    key: Arc<Key>,
     h: HeaderMap,
     ws: WebSocketUpgrade,
     call_id: Option<String>,
     target: String,
     model: String,
 ) -> Result<Response, ApiError> {
-    let key = authed(&app, &h)?;
+    authed(&key)?;
     let owner = owner(&app, &key, call_id.as_deref())?;
     let s = app.settings();
     let url = ws_url(&target);
@@ -196,6 +198,7 @@ async fn relay_live(app: Arc<App>, key: Arc<Key>, mut up: Link, mut client: WebS
 }
 pub(super) async fn v1_realtime(
     State(app): State<Arc<App>>,
+    Extension(key): Extension<Arc<Key>>,
     h: HeaderMap,
     Query(q): Query<Vec<(String, String)>>,
     ws: WebSocketUpgrade,
@@ -204,11 +207,12 @@ pub(super) async fn v1_realtime(
     let (call_id, model) = (get("call_id"), get("model").unwrap_or_else(|| "realtime".into()));
     let mut url = reqwest::Url::parse(&format!("{}/realtime", app.settings().realtime_base)).map_err(|e| internal(&e))?;
     url.query_pairs_mut().extend_pairs(q.iter());
-    live(app, h, ws, call_id, url.to_string(), model).await
+    live(app, key, h, ws, call_id, url.to_string(), model).await
 }
 
 pub(super) async fn v1_live(
     State(app): State<Arc<App>>,
+    Extension(key): Extension<Arc<Key>>,
     h: HeaderMap,
     Path(call_id): Path<String>,
     RawQuery(q): RawQuery,
@@ -218,5 +222,5 @@ pub(super) async fn v1_live(
         return Err(ApiError::new(ApiFormat::Responses, 404, "invalid realtime call id"));
     }
     let target = with_query(format!("{}/live/{call_id}", app.settings().realtime_base), q.as_deref());
-    live(app, h, ws, Some(call_id), target, "realtime".into()).await
+    live(app, key, h, ws, Some(call_id), target, "realtime".into()).await
 }

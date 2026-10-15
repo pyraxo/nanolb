@@ -1,20 +1,20 @@
 use super::forward::{Call, JSON, forward, json_response, json_shape};
 use super::{Req, prelude};
-use crate::app::{App, Provider};
+use crate::app::{App, Key, Provider};
 use crate::server::error::ApiError;
 use crate::store::Endpoint;
 use crate::time::now_ms;
+use axum::Extension;
 use axum::body::Bytes;
 use axum::extract::{Path, State};
-use axum::http::HeaderMap;
 use axum::response::Response;
 use serde_json::Value;
 use std::sync::Arc;
 use std::time::Duration;
 
-pub(super) async fn create(State(app): State<Arc<App>>, h: HeaderMap, body: Bytes) -> Result<Response, ApiError> {
+pub(super) async fn create(State(app): State<Arc<App>>, Extension(key): Extension<Arc<Key>>, body: Bytes) -> Result<Response, ApiError> {
     let started = now_ms();
-    let key = prelude(&app, &h)?;
+    prelude(&key)?;
     let req = Req {
         app: &app,
         key: &key,
@@ -39,9 +39,13 @@ pub(super) async fn create(State(app): State<Arc<App>>, h: HeaderMap, body: Byte
     Ok(json_response(status, bytes))
 }
 
-pub(super) async fn finalize(State(app): State<Arc<App>>, h: HeaderMap, Path(id): Path<String>) -> Result<Response, ApiError> {
+pub(super) async fn finalize(
+    State(app): State<Arc<App>>,
+    Extension(key): Extension<Arc<Key>>,
+    Path(id): Path<String>,
+) -> Result<Response, ApiError> {
     let started = now_ms();
-    let key = prelude(&app, &h)?;
+    prelude(&key)?;
     let req = Req {
         app: &app,
         key: &key,

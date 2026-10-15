@@ -3,16 +3,15 @@ mod frames;
 mod realtime;
 
 use crate::app::{Account, App, Inflight, Key, Provider};
-use crate::server::auth::api_key;
 use crate::server::error::{ApiError, ApiFormat};
 use crate::time::now_ms;
 use crate::upstream::UpstreamError;
-use axum::Router;
 use axum::extract::State;
 use axum::extract::ws::WebSocketUpgrade;
 use axum::http::HeaderMap;
 use axum::response::Response;
 use axum::routing::{get, post};
+use axum::{Extension, Router};
 use conn::Conn;
 use std::sync::Arc;
 
@@ -50,10 +49,8 @@ fn header_session(h: &HeaderMap) -> Option<String> {
         .map(str::to_owned)
 }
 
-fn authed(app: &App, h: &HeaderMap) -> Result<Arc<Key>, ApiError> {
-    let key = api_key(app, h).ok_or_else(|| ApiError::unauthorized(ApiFormat::Responses))?;
-    key.check(now_ms()).map_err(|e| ApiError::from((ApiFormat::Responses, e)))?;
-    Ok(key)
+fn authed(key: &Key) -> Result<(), ApiError> {
+    key.check(now_ms()).map_err(|e| ApiError::from((ApiFormat::Responses, e)))
 }
 
 fn limited_until(app: &App, key: &Key, e: &UpstreamError) -> Option<i64> {
@@ -69,8 +66,13 @@ fn exhausted(app: &App, key: &Key, e: UpstreamError) -> ApiError {
     }
 }
 
-pub(crate) async fn upgrade(State(app): State<Arc<App>>, h: HeaderMap, ws: WebSocketUpgrade) -> Result<Response, ApiError> {
-    let key = authed(&app, &h)?;
+pub(crate) async fn upgrade(
+    State(app): State<Arc<App>>,
+    Extension(key): Extension<Arc<Key>>,
+    h: HeaderMap,
+    ws: WebSocketUpgrade,
+) -> Result<Response, ApiError> {
+    authed(&key)?;
     let mut conn = Conn::new(app, key, h);
     let extra = conn.preconnect().await.map_err(|e| {
         tracing::warn!(status = e.status(), error = %e, "websocket handshake failed");

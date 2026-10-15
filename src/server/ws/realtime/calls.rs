@@ -1,11 +1,12 @@
 use super::{call_binding, internal, with_query};
-use crate::app::{App, Provider};
+use crate::app::{App, Key, Provider};
 use crate::server::error::ApiError;
 use crate::server::ws::frames::PASS_HEADERS;
 use crate::server::ws::{authed, exhausted};
 use crate::store::{Endpoint, Usage, UsageMeta};
 use crate::time::now_ms;
 use crate::upstream::{self, UpstreamError, codex};
+use axum::Extension;
 use axum::body::Body;
 use axum::extract::{RawQuery, State};
 use axum::http::{HeaderMap, HeaderValue, header};
@@ -32,9 +33,9 @@ fn relayed(status: reqwest::StatusCode, headers: &HeaderMap, bytes: Bytes) -> Re
     out
 }
 
-async fn calls(app: Arc<App>, h: HeaderMap, target: String, body: Bytes) -> Result<Response, ApiError> {
+async fn calls(app: Arc<App>, key: Arc<Key>, h: HeaderMap, target: String, body: Bytes) -> Result<Response, ApiError> {
     let started = now_ms();
-    let key = authed(&app, &h)?;
+    authed(&key)?;
     let s = app.settings();
     let timeout = Duration::from_secs(s.first_event_timeout_secs.max(5));
     let mut tried: Vec<String> = vec![];
@@ -113,20 +114,22 @@ async fn calls(app: Arc<App>, h: HeaderMap, target: String, body: Bytes) -> Resu
 }
 pub(in crate::server::ws) async fn backend_calls(
     State(app): State<Arc<App>>,
+    Extension(key): Extension<Arc<Key>>,
     h: HeaderMap,
     RawQuery(q): RawQuery,
     body: Bytes,
 ) -> Result<Response, ApiError> {
     let target = with_query(format!("{}/codex/realtime/calls", app.settings().upstream_base), q.as_deref());
-    calls(app, h, target, body).await
+    calls(app, key, h, target, body).await
 }
 
 pub(in crate::server::ws) async fn v1_calls(
     State(app): State<Arc<App>>,
+    Extension(key): Extension<Arc<Key>>,
     h: HeaderMap,
     RawQuery(q): RawQuery,
     body: Bytes,
 ) -> Result<Response, ApiError> {
     let target = with_query(format!("{}/realtime/calls", app.settings().realtime_base), q.as_deref());
-    calls(app, h, target, body).await
+    calls(app, key, h, target, body).await
 }

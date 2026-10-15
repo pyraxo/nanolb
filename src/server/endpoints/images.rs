@@ -6,9 +6,9 @@ use crate::server::error::{ApiError, ApiFormat};
 use crate::store::Endpoint;
 use crate::time::now_ms;
 use crate::upstream::codex;
+use axum::Extension;
 use axum::body::Bytes;
 use axum::extract::{Multipart, State};
-use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
 use base64::Engine;
 use eventsource_stream::Eventsource;
@@ -185,17 +185,25 @@ fn images_result(done: Option<&Value>, items: Vec<Value>) -> Result<Value, ApiEr
     Ok(out)
 }
 
-pub(super) async fn generations(State(app): State<Arc<App>>, h: HeaderMap, body: Bytes) -> Result<Response, ApiError> {
+pub(super) async fn generations(
+    State(app): State<Arc<App>>,
+    Extension(key): Extension<Arc<Key>>,
+    body: Bytes,
+) -> Result<Response, ApiError> {
     let started = now_ms();
-    let key = prelude(&app, &h)?;
+    prelude(&key)?;
     let opts: Value = serde_json::from_slice(&body).map_err(|e| bad_request(format!("invalid json: {e}")))?;
     let edit = Edit { images: &[], mask: None };
     images(&app, &key, &opts, &edit, started).await
 }
 
-pub(super) async fn edits_json(State(app): State<Arc<App>>, h: HeaderMap, body: Bytes) -> Result<Response, ApiError> {
+pub(super) async fn edits_json(
+    State(app): State<Arc<App>>,
+    Extension(key): Extension<Arc<Key>>,
+    body: Bytes,
+) -> Result<Response, ApiError> {
     let started = now_ms();
-    let key = prelude(&app, &h)?;
+    prelude(&key)?;
     let opts: Value = serde_json::from_slice(&body).map_err(|e| bad_request(format!("invalid json: {e}")))?;
     let urls: Vec<String> = opts["images"]
         .as_array()
@@ -211,9 +219,13 @@ pub(super) async fn edits_json(State(app): State<Arc<App>>, h: HeaderMap, body: 
     images(&app, &key, &opts, &edit, started).await
 }
 
-pub(super) async fn edits_multipart(State(app): State<Arc<App>>, h: HeaderMap, mp: Multipart) -> Result<Response, ApiError> {
+pub(super) async fn edits_multipart(
+    State(app): State<Arc<App>>,
+    Extension(key): Extension<Arc<Key>>,
+    mp: Multipart,
+) -> Result<Response, ApiError> {
     let started = now_ms();
-    let key = prelude(&app, &h)?;
+    prelude(&key)?;
     let form = read_form(mp).await?;
     let urls: Vec<String> = form
         .files

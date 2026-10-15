@@ -1,12 +1,12 @@
 use super::forward::{Call, JSON, forward, pass};
 use super::{Req, bad_request, prelude, require_model};
-use crate::app::{App, Provider};
+use crate::app::{App, Key, Provider};
 use crate::server::error::ApiError;
 use crate::store::Endpoint;
 use crate::time::now_ms;
+use axum::Extension;
 use axum::body::Bytes;
 use axum::extract::{Multipart, State};
-use axum::http::HeaderMap;
 use axum::response::Response;
 use reqwest::multipart::{Form, Part};
 use serde_json::Value;
@@ -56,7 +56,7 @@ fn part(data: &Bytes, file_name: &str, content_type: &str) -> Part {
     make().mime_str(content_type).unwrap_or_else(|_| make())
 }
 
-fn check_model(form: &Fields, key: &crate::app::Key) -> Result<(), ApiError> {
+fn check_model(form: &Fields, key: &Key) -> Result<(), ApiError> {
     match form.text.get("model").map(String::as_str) {
         None => Err(bad_request("model is required")),
         Some(m) if m != TRANSCRIBE_MODEL => Err(bad_request(format!("model {m} is not supported, use {TRANSCRIBE_MODEL}"))),
@@ -64,9 +64,9 @@ fn check_model(form: &Fields, key: &crate::app::Key) -> Result<(), ApiError> {
     }
 }
 
-async fn transcribe(app: Arc<App>, h: HeaderMap, mp: Multipart, v1: bool) -> Result<Response, ApiError> {
+async fn transcribe(app: Arc<App>, key: Arc<Key>, mp: Multipart, v1: bool) -> Result<Response, ApiError> {
     let started = now_ms();
-    let key = prelude(&app, &h)?;
+    prelude(&key)?;
     let form = read_form(mp).await?;
     if v1 {
         check_model(&form, &key)?;
@@ -98,10 +98,18 @@ async fn transcribe(app: Arc<App>, h: HeaderMap, mp: Multipart, v1: bool) -> Res
     Ok(pass(sent))
 }
 
-pub(super) async fn transcribe_backend(State(app): State<Arc<App>>, h: HeaderMap, mp: Multipart) -> Result<Response, ApiError> {
-    transcribe(app, h, mp, false).await
+pub(super) async fn transcribe_backend(
+    State(app): State<Arc<App>>,
+    Extension(key): Extension<Arc<Key>>,
+    mp: Multipart,
+) -> Result<Response, ApiError> {
+    transcribe(app, key, mp, false).await
 }
 
-pub(super) async fn transcribe_v1(State(app): State<Arc<App>>, h: HeaderMap, mp: Multipart) -> Result<Response, ApiError> {
-    transcribe(app, h, mp, true).await
+pub(super) async fn transcribe_v1(
+    State(app): State<Arc<App>>,
+    Extension(key): Extension<Arc<Key>>,
+    mp: Multipart,
+) -> Result<Response, ApiError> {
+    transcribe(app, key, mp, true).await
 }

@@ -1,27 +1,23 @@
-use crate::app::{App, Provider};
-use crate::server::auth::api_key;
+use crate::app::{App, Key, Provider};
 use crate::server::error::{ApiError, ApiFormat};
 use crate::time::ts_iso;
 use crate::translate::anthropic;
 use crate::upstream::{UpstreamError, codex};
-use axum::Json;
 use axum::body::Bytes;
 use axum::extract::{RawQuery, State};
 use axum::http::{HeaderMap, header};
 use axum::response::{IntoResponse, Response};
+use axum::{Extension, Json};
 use serde_json::{Value, json};
 use std::sync::Arc;
 
-pub(crate) async fn count_tokens(State(app): State<Arc<App>>, h: HeaderMap, body: Bytes) -> Result<Json<Value>, ApiError> {
-    api_key(&app, &h).ok_or_else(|| ApiError::unauthorized(ApiFormat::Anthropic))?;
+pub(crate) async fn count_tokens(body: Bytes) -> Result<Json<Value>, ApiError> {
     let req: Value = serde_json::from_slice(&body).map_err(|e| ApiError::new(ApiFormat::Anthropic, 400, e.to_string()))?;
     Ok(Json(anthropic::count_tokens(&req)))
 }
 
-pub(crate) async fn models(State(app): State<Arc<App>>, h: HeaderMap) -> Result<Json<Value>, ApiError> {
+pub(crate) async fn models(State(app): State<Arc<App>>, h: HeaderMap) -> Json<Value> {
     let anth = h.contains_key("anthropic-version");
-    let format = if anth { ApiFormat::Anthropic } else { ApiFormat::Chat };
-    api_key(&app, &h).ok_or_else(|| ApiError::unauthorized(format))?;
     let list = app.model_list();
     if anth {
         let created_at = ts_iso(app.started_at);
@@ -30,16 +26,14 @@ pub(crate) async fn models(State(app): State<Arc<App>>, h: HeaderMap) -> Result<
             .map(|(m, _)| json!({"type": "model", "id": m, "display_name": m, "created_at": created_at}))
             .collect();
         let (first_id, last_id) = (data.first().map(|d| d["id"].clone()), data.last().map(|d| d["id"].clone()));
-        return Ok(Json(
-            json!({"first_id": first_id, "last_id": last_id, "has_more": false, "data": data}),
-        ));
+        return Json(json!({"first_id": first_id, "last_id": last_id, "has_more": false, "data": data}));
     }
     let created = app.started_at / 1000;
     let data: Vec<Value> = list
         .into_iter()
         .map(|(m, ctx)| json!({"id": m, "object": "model", "created": created, "owned_by": "openai", "context_length": ctx}))
         .collect();
-    Ok(Json(json!({"object": "list", "data": data})))
+    Json(json!({"object": "list", "data": data}))
 }
 
 pub(crate) async fn openrouter_models(State(app): State<Arc<App>>) -> Json<Value> {
@@ -71,8 +65,7 @@ pub(crate) async fn openrouter_models(State(app): State<Arc<App>>) -> Json<Value
     Json(json!({"data": data}))
 }
 
-pub(crate) async fn openrouter_key(State(app): State<Arc<App>>, h: HeaderMap) -> Result<Json<Value>, ApiError> {
-    let key = api_key(&app, &h).ok_or_else(|| ApiError::unauthorized(ApiFormat::OpenRouter))?;
+pub(crate) async fn openrouter_key(Extension(key): Extension<Arc<Key>>) -> Result<Json<Value>, ApiError> {
     let v = key.view();
     let u = &v["usage"];
     let limit = key.cfg.limits.iter().find_map(|l| l.max_cost_usd);
@@ -85,9 +78,13 @@ pub(crate) async fn openrouter_key(State(app): State<Arc<App>>, h: HeaderMap) ->
     }})))
 }
 
-pub(crate) async fn codex_models(State(app): State<Arc<App>>, h: HeaderMap, RawQuery(q): RawQuery) -> Result<Response, ApiError> {
+pub(crate) async fn codex_models(
+    State(app): State<Arc<App>>,
+    Extension(key): Extension<Arc<Key>>,
+    h: HeaderMap,
+    RawQuery(q): RawQuery,
+) -> Result<Response, ApiError> {
     let format = ApiFormat::Responses;
-    let key = api_key(&app, &h).ok_or_else(|| ApiError::unauthorized(format))?;
     let acc = app
         .pick(Provider::Codex, &key.cfg.accounts, &[], None)
         .ok_or_else(|| ApiError::from((format, UpstreamError::NoAccount)))?;

@@ -6,13 +6,11 @@ mod images;
 mod usage;
 
 use crate::app::{App, Key, Provider};
-use crate::server::auth::api_key;
 use crate::server::error::{ApiError, ApiFormat};
 use crate::store::{Endpoint, Usage, UsageMeta};
 use crate::time::now_ms;
 use crate::upstream::UpstreamError;
 use axum::Router;
-use axum::http::HeaderMap;
 use axum::routing::{get, post};
 use serde_json::Value;
 use std::sync::Arc;
@@ -33,10 +31,8 @@ pub(crate) fn routes() -> Router<Arc<App>> {
         .route("/v1/embeddings", post(embeddings::embeddings))
 }
 
-fn prelude(app: &App, h: &HeaderMap) -> Result<Arc<Key>, ApiError> {
-    let key = api_key(app, h).ok_or_else(|| ApiError::unauthorized(ApiFormat::Chat))?;
-    key.check(now_ms()).map_err(|e| ApiError::from((ApiFormat::Chat, e)))?;
-    Ok(key)
+fn prelude(key: &Key) -> Result<(), ApiError> {
+    key.check(now_ms()).map_err(|e| ApiError::from((ApiFormat::Chat, e)))
 }
 
 fn bad_request(msg: impl Into<String>) -> ApiError {

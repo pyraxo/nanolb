@@ -5,12 +5,12 @@ mod session;
 
 pub(crate) use catalog::{codex_models, count_tokens, models, openrouter_key, openrouter_models};
 
-use crate::app::{App, Provider, Sessions, canonical_model};
-use crate::server::auth::api_key;
+use crate::app::{App, Key, Provider, Sessions, canonical_model};
 use crate::server::error::{ApiError, ApiFormat};
 use crate::time::now_ms;
 use crate::translate::{anthropic, chat};
 use crate::upstream::codex;
+use axum::Extension;
 use axum::body::Bytes;
 use axum::extract::State;
 use axum::http::HeaderMap;
@@ -20,20 +20,40 @@ use serde_json::{Value, json};
 use session::{file_owner, session_key};
 use std::sync::Arc;
 
-pub(crate) async fn responses(State(app): State<Arc<App>>, h: HeaderMap, body: Bytes) -> Result<Response, ApiError> {
-    handle(app, ApiFormat::Responses, h, body).await
+pub(crate) async fn responses(
+    State(app): State<Arc<App>>,
+    Extension(key): Extension<Arc<Key>>,
+    h: HeaderMap,
+    body: Bytes,
+) -> Result<Response, ApiError> {
+    handle(app, key, ApiFormat::Responses, h, body).await
 }
 
-pub(crate) async fn chat_completions(State(app): State<Arc<App>>, h: HeaderMap, body: Bytes) -> Result<Response, ApiError> {
-    handle(app, ApiFormat::Chat, h, body).await
+pub(crate) async fn chat_completions(
+    State(app): State<Arc<App>>,
+    Extension(key): Extension<Arc<Key>>,
+    h: HeaderMap,
+    body: Bytes,
+) -> Result<Response, ApiError> {
+    handle(app, key, ApiFormat::Chat, h, body).await
 }
 
-pub(crate) async fn openrouter(State(app): State<Arc<App>>, h: HeaderMap, body: Bytes) -> Result<Response, ApiError> {
-    handle(app, ApiFormat::OpenRouter, h, body).await
+pub(crate) async fn openrouter(
+    State(app): State<Arc<App>>,
+    Extension(key): Extension<Arc<Key>>,
+    h: HeaderMap,
+    body: Bytes,
+) -> Result<Response, ApiError> {
+    handle(app, key, ApiFormat::OpenRouter, h, body).await
 }
 
-pub(crate) async fn messages(State(app): State<Arc<App>>, h: HeaderMap, body: Bytes) -> Result<Response, ApiError> {
-    handle(app, ApiFormat::Anthropic, h, body).await
+pub(crate) async fn messages(
+    State(app): State<Arc<App>>,
+    Extension(key): Extension<Arc<Key>>,
+    h: HeaderMap,
+    body: Bytes,
+) -> Result<Response, ApiError> {
+    handle(app, key, ApiFormat::Anthropic, h, body).await
 }
 
 fn translate(req: Value, format: ApiFormat, requested: &str) -> Result<(Value, Reply), ApiError> {
@@ -51,9 +71,8 @@ fn translate(req: Value, format: ApiFormat, requested: &str) -> Result<(Value, R
     })
 }
 
-async fn handle(app: Arc<App>, format: ApiFormat, h: HeaderMap, body: Bytes) -> Result<Response, ApiError> {
+async fn handle(app: Arc<App>, key: Arc<Key>, format: ApiFormat, h: HeaderMap, body: Bytes) -> Result<Response, ApiError> {
     let started = now_ms();
-    let key = api_key(&app, &h).ok_or_else(|| ApiError::unauthorized(format))?;
     key.check(started).map_err(|e| ApiError::from((format, e)))?;
     let req: Value = serde_json::from_slice(&body).map_err(|e| ApiError::new(format, 400, format!("invalid json: {e}")))?;
     let requested = req["model"].as_str().unwrap_or_default().to_owned();
