@@ -5,10 +5,6 @@
 
 A fast load balancer for Codex (ChatGPT) subscription accounts.
 
-nanolb sits between your tools and the ChatGPT backend. You connect the ChatGPT accounts you own, point the Codex CLI, Hermes, Claude Code or any OpenAI-compatible client at nanolb, and it routes each request to an account with capacity. When an account reaches its usage limit, new requests move to the next account automatically.
-
-nanolb is a single Rust binary backed by SQLite. It has no web UI; it is controlled through a CLI, an HTTP admin API and an MCP server, so it can be operated by people and AI agents alike. It is a rewrite of [codex-lb](https://github.com/Soju06/codex-lb) with a focus on speed and agent control.
-
 ## Features
 
 - **Low overhead**: about 0.1 ms added per request, streaming passthrough, pooled HTTP/2 connections and no database reads on the request path.
