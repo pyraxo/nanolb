@@ -220,9 +220,9 @@ Measured on Linux (Docker, aarch64) against a mock upstream that answers instant
 
 | Endpoint | Concurrency | Added latency (p50) | p99 | Throughput |
 |---|---|---|---|---|
-| `/v1/responses` | 1 | 0.10 ms | | 6,800 req/s |
+| `/v1/responses` | 1 | 0.10 ms | - | 6,800 req/s |
 | `/v1/responses` | 64 | 1.8 ms | 5.5 ms | 26,400 req/s |
-| `/v1/chat/completions` | 1 | 0.15 ms | | 4,300 req/s |
+| `/v1/chat/completions` | 1 | 0.15 ms | - | 4,300 req/s |
 | `/v1/chat/completions` | 64 | 1.5 ms | 5.8 ms | 30,300 req/s |
 
 | Resource | Value |
