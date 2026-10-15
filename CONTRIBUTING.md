@@ -6,11 +6,24 @@ Run these commands before each commit. All of them must pass.
 
 ```sh
 cargo fmt --check
-cargo clippy --release -- -D warnings
+cargo clippy --all-targets -- -D warnings
 cargo test
+python3 scripts/compat.py check
 ```
 
-`rustfmt.toml` sets the line width to 140. `clippy.toml` sets the lint limits.
+- `rustfmt.toml` sets the line width to 140.
+- `Cargo.toml` (`[lints]`) sets the lint policy: `clippy::pedantic`, selected `nursery` and `restriction` lints (no `unwrap` or `expect` outside tests), and `unsafe_code = "forbid"`.
+- `clippy.toml` sets the lint limits.
+- For a local exception, use `#[expect(lint, reason = "...")]`, not `#[allow]`.
+- `scripts/compat.py check` compares the external interface (CLI help, routes, admin ops, MCP tools, settings, DB schema, error bodies) with `scripts/compat/baseline/`. When you change that interface on purpose, run `python3 scripts/compat.py baseline` and commit the new baseline with the change.
+
+## Layout
+
+- `src/main.rs` only calls `nanolb::run()`. All code is in the library (`src/lib.rs`).
+- Each directory is one layer: `app/` (state), `store/` (SQLite), `upstream/` (Codex, OpenRouter), `server/` (`http`, `ws`, `endpoints`), `translate/`, `control/` (admin, ops, MCP) and `cli/`.
+- Each layer has its own error type (`thiserror`). The CLI uses `anyhow`.
+- Use `pub(crate)` by default. `unreachable_pub` enforces it.
+- Keep files at about 300 lines or fewer. Put unit tests next to the code. Put router-level tests in `tests/`, with shared helpers in `tests/common/`.
 
 ## Code rules
 
