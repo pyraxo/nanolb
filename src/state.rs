@@ -340,6 +340,8 @@ pub struct Settings {
     pub idle_timeout_secs: u64,
     pub keepalive_secs: u64,
     pub compress_upstream: bool,
+    pub realtime_base: String,
+    pub prewarm: bool,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -373,6 +375,8 @@ impl Default for Settings {
                 .collect(),
             keepalive_secs: 15,
             compress_upstream: false,
+            realtime_base: "https://api.openai.com/v1".into(),
+            prewarm: false,
         }
     }
 }

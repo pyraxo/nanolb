@@ -1,14 +1,733 @@
-use crate::state::App;
+use crate::codex;
+use crate::now_ms;
+use crate::proxy::{self, Inflight, Kind};
+use crate::state::{Account, App, Key};
 use axum::Router;
 use axum::extract::State;
-use axum::http::StatusCode;
-use axum::response::{IntoResponse, Response};
+use axum::extract::ws::{self, WebSocket, WebSocketUpgrade};
+use axum::http::{HeaderMap, HeaderName, HeaderValue, header};
+use axum::response::Response;
+use bytes::Bytes;
+use futures::{SinkExt, StreamExt};
+use serde_json::{Value, json};
 use std::sync::Arc;
+use std::sync::atomic::Ordering::Relaxed;
+use std::time::Duration;
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+use tokio_tungstenite::tungstenite::protocol::CloseFrame;
+use tokio_tungstenite::tungstenite::{self as tung, Message};
+
+type Upstream = tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+
+const BETA: &str = "responses_websockets=2026-02-06";
+const PASS_HEADERS: &[&str] = &["openai-model", "x-reasoning-included", "x-models-etag", "x-request-id"];
 
 pub fn routes() -> Router<Arc<App>> {
     Router::new()
 }
 
-pub async fn upgrade(State(_app): State<Arc<App>>) -> Response {
-    StatusCode::NOT_IMPLEMENTED.into_response()
+struct Fail(u16, String);
+
+struct Link {
+    ws: Upstream,
+    acc: Arc<Account>,
+    _guard: Inflight,
+}
+
+struct Pending {
+    frame: String,
+    model: String,
+    started: i64,
+    ttfb: Option<i64>,
+    retries: u32,
+    acc: Option<Arc<Account>>,
+    deferred: Option<Value>,
+}
+
+struct Conn {
+    app: Arc<App>,
+    key: Arc<Key>,
+    h: HeaderMap,
+    cache: Option<String>,
+    up: Option<Link>,
+    tried: Vec<String>,
+    pending: Option<Pending>,
+    created: bool,
+}
+
+enum Ev {
+    Client(Option<Result<ws::Message, axum::Error>>),
+    Up(Option<Result<Message, tung::Error>>),
+    Timeout,
+}
+
+fn header_session(h: &HeaderMap) -> Option<String> {
+    ["session_id", "session-id", "thread-id", "conversation_id"]
+        .iter()
+        .find_map(|n| h.get(*n).and_then(|v| v.to_str().ok()).filter(|v| !v.is_empty()))
+        .map(str::to_string)
+}
+
+fn ws_url(http: &str) -> String {
+    if let Some(r) = http.strip_prefix("https://") {
+        format!("wss://{r}")
+    } else if let Some(r) = http.strip_prefix("http://") {
+        format!("ws://{r}")
+    } else {
+        http.to_string()
+    }
+}
+
+fn handshake(app: &App, acc: &Account, client: &HeaderMap, url: Option<&str>) -> Result<tung::handshake::client::Request, String> {
+    let built = codex::request(app, acc, reqwest::Method::GET, "/codex/responses", Some(client))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let url = url.map_or_else(|| ws_url(built.url().as_str()), str::to_string);
+    let mut req = url.into_client_request().map_err(|e| e.to_string())?;
+    let hs = req.headers_mut();
+    for (k, v) in built.headers() {
+        if k != header::ACCEPT {
+            hs.append(k.clone(), v.clone());
+        }
+    }
+    Ok(req)
+}
+
+fn pass_headers(src: &HeaderMap) -> HeaderMap {
+    let mut out = HeaderMap::new();
+    for (k, v) in src {
+        if PASS_HEADERS.contains(&k.as_str()) || k.as_str().starts_with("x-codex-") {
+            out.append(k.clone(), v.clone());
+        }
+    }
+    out
+}
+
+fn retry_until(status: u16, err: &Value) -> Option<i64> {
+    let code = err["code"].as_str().or(err["type"].as_str()).unwrap_or_default();
+    let reset = codex::limit_reset_from_error(&json!({ "error": err }));
+    match status {
+        429 => Some(reset.unwrap_or(now_ms() + 60_000)),
+        401 => Some(now_ms() + 300_000),
+        403 => Some(0),
+        500.. => Some(now_ms() + 5_000),
+        _ if reset.is_some() => reset,
+        _ if code.contains("rate_limit")
+            || code.contains("usage_limit")
+            || code.contains("overloaded")
+            || code.contains("server_error") =>
+        {
+            Some(now_ms() + 5_000)
+        }
+        _ => None,
+    }
+}
+
+fn event_type(t: &str) -> &str {
+    t.find("\"type\":\"")
+        .map(|i| &t[i + 8..])
+        .and_then(|r| r.find('"').map(|j| &r[..j]))
+        .unwrap_or_default()
+}
+
+fn error_frame(status: u16, typ: &str, msg: &str, retry_after: Option<i64>) -> String {
+    let mut v = json!({"type": "error", "status": status, "error": {"type": typ, "message": msg}});
+    if let Some(s) = retry_after {
+        v["headers"] = json!({"retry-after": s.to_string()});
+        v["error"]["resets_at"] = json!((now_ms() / 1000) + s);
+    }
+    v.to_string()
+}
+
+fn to_client(m: Message) -> Option<ws::Message> {
+    Some(match m {
+        Message::Text(t) => ws::Message::Text(ws::Utf8Bytes::try_from(Bytes::from(t)).ok()?),
+        Message::Binary(b) => ws::Message::Binary(b),
+        Message::Close(f) => ws::Message::Close(f.map(|f| ws::CloseFrame {
+            code: f.code.into(),
+            reason: ws::Utf8Bytes::try_from(Bytes::from(f.reason)).unwrap_or_default(),
+        })),
+        _ => return None,
+    })
+}
+
+fn to_upstream(m: ws::Message) -> Option<Message> {
+    Some(match m {
+        ws::Message::Text(t) => Message::Text(tung::Utf8Bytes::try_from(Bytes::from(t)).ok()?),
+        ws::Message::Binary(b) => Message::Binary(b),
+        ws::Message::Close(f) => Message::Close(f.map(|f| CloseFrame {
+            code: f.code.into(),
+            reason: tung::Utf8Bytes::try_from(Bytes::from(f.reason)).unwrap_or_default(),
+        })),
+        _ => return None,
+    })
+}
+
+impl Conn {
+    fn session(&self) -> Option<String> {
+        self.cache.as_ref().map(|c| format!("{}\u{1f}codex\u{1f}{c}", self.key.cfg.id))
+    }
+
+    async fn connect(&mut self) -> Result<HeaderMap, Fail> {
+        let s = self.app.settings();
+        let session = self.session();
+        let timeout = Duration::from_secs(s.first_event_timeout_secs.max(5));
+        let mut refreshed: Vec<String> = vec![];
+        let mut last = Fail(503, "no available accounts".into());
+        for _ in 0..s.max_attempts.max(1) {
+            let Some(acc) = self.app.pick("codex", &self.key.cfg.accounts, &self.tried, session.as_deref()) else {
+                break;
+            };
+            if let Err(e) = codex::ensure_fresh(&self.app, &acc, false).await {
+                self.tried.push(acc.id.clone());
+                last = Fail(502, e);
+                continue;
+            }
+            let mut req = match handshake(&self.app, &acc, &self.h, None) {
+                Ok(r) => r,
+                Err(e) => return Err(Fail(500, e)),
+            };
+            let hs = req.headers_mut();
+            hs.insert("openai-beta", HeaderValue::from_static(BETA));
+            if !hs.contains_key("session_id")
+                && !hs.contains_key("session-id")
+                && let Some(v) = self.cache.as_deref().and_then(|c| HeaderValue::from_str(c).ok())
+            {
+                hs.insert("session_id", v);
+            }
+            match tokio::time::timeout(timeout, tokio_tungstenite::connect_async(req)).await {
+                Ok(Ok((ws, resp))) => {
+                    codex::apply_rate_headers(&acc, resp.headers());
+                    acc.inflight.fetch_add(1, Relaxed);
+                    self.up = Some(Link {
+                        ws,
+                        _guard: Inflight(acc.clone()),
+                        acc,
+                    });
+                    return Ok(pass_headers(resp.headers()));
+                }
+                Ok(Err(tung::Error::Http(resp))) => {
+                    let status = resp.status().as_u16();
+                    codex::apply_rate_headers(&acc, resp.headers());
+                    if status == 401 && !refreshed.contains(&acc.id) {
+                        refreshed.push(acc.id.clone());
+                        if codex::ensure_fresh(&self.app, &acc, true).await.is_ok() {
+                            continue;
+                        }
+                    }
+                    let text = resp.body().as_deref().map(String::from_utf8_lossy).unwrap_or_default().to_string();
+                    let v: Value = serde_json::from_str(&text).unwrap_or_default();
+                    let msg = v["error"]["message"]
+                        .as_str()
+                        .or(v["detail"].as_str())
+                        .map_or_else(|| text.chars().take(500).collect(), str::to_string);
+                    let Some(until) = retry_until(status, &v["error"]) else {
+                        tracing::warn!(account = %acc.id, status, error = %msg, "upstream rejected websocket");
+                        return Err(Fail(status, msg));
+                    };
+                    if until > 0 {
+                        acc.fail(until, format!("{status}: {msg}"));
+                    }
+                    tracing::warn!(account = %acc.id, status, error = %msg, "websocket handshake failed, failing over");
+                    self.tried.push(acc.id.clone());
+                    last = Fail(status, msg);
+                }
+                Ok(Err(e)) => {
+                    acc.fail(now_ms() + 15_000, format!("connect: {e}"));
+                    self.tried.push(acc.id.clone());
+                    last = Fail(502, format!("upstream websocket connect failed: {e}"));
+                }
+                Err(_) => {
+                    acc.fail(now_ms() + 15_000, "websocket handshake timed out".into());
+                    self.tried.push(acc.id.clone());
+                    last = Fail(504, "upstream timed out".into());
+                }
+            }
+        }
+        Err(last)
+    }
+
+    fn limited_until(&self, f: &Fail) -> Option<i64> {
+        (f.0 == 503)
+            .then(|| self.app.next_available("codex", &self.key.cfg.accounts))
+            .flatten()
+    }
+
+    fn fail_frame(&self, f: &Fail) -> String {
+        match self.limited_until(f) {
+            Some(until) => error_frame(
+                429,
+                "usage_limit_reached",
+                &format!("all codex accounts are rate limited until {}", crate::ts_iso(until)),
+                Some(((until - now_ms()) / 1000).max(1)),
+            ),
+            None => error_frame(f.0, "api_error", &f.1, None),
+        }
+    }
+
+    fn fail_response(&self, f: &Fail) -> Response {
+        match self.limited_until(f) {
+            Some(until) => proxy::limited(Kind::Responses, "codex", until),
+            None => proxy::error(Kind::Responses, f.0, &f.1),
+        }
+    }
+
+    fn record(&mut self, status: u16, resp: &Value) {
+        let Some(p) = self.pending.take() else {
+            return;
+        };
+        let model = resp["model"].as_str().unwrap_or(&p.model);
+        let row = codex::usage_row(
+            &self.key.cfg.id,
+            p.acc.as_ref().map_or("", |a| &a.id),
+            model,
+            "responses_ws",
+            status,
+            &resp["usage"],
+            p.started,
+            p.ttfb.unwrap_or(p.started),
+        );
+        self.app.record(Some(&self.key), row);
+    }
+
+    async fn send_up(&mut self, m: Message) -> bool {
+        match self.up.as_mut() {
+            Some(l) => l.ws.send(m).await.is_ok(),
+            None => false,
+        }
+    }
+
+    async fn on_create(&mut self, mut v: Value, client: &mut WebSocket) -> bool {
+        let started = now_ms();
+        let reject = |s: u16, t: &str, m: &str| ws::Message::Text(error_frame(s, t, m, None).into());
+        if let Err(e) = self.key.check(started) {
+            return client.send(reject(429, "rate_limit_exceeded", &e)).await.is_ok();
+        }
+        let requested = v["model"].as_str().unwrap_or_default().to_string();
+        let model = App::canonical_model(&requested).to_string();
+        if !self.key.allows_model(&requested) && !self.key.allows_model(&model) {
+            let m = format!("model {requested} not allowed for this key");
+            return client.send(reject(403, "invalid_request_error", &m)).await.is_ok();
+        }
+        if App::provider_for(&model) != "codex" {
+            let m = format!("model {model} is not served over websocket; use POST /v1/responses");
+            return client.send(reject(400, "invalid_request_error", &m)).await.is_ok();
+        }
+        v["model"] = Value::String(model.clone());
+        v["store"] = Value::Bool(false);
+        if self.cache.is_none() {
+            self.cache = Some(v["prompt_cache_key"].as_str().map_or_else(
+                || {
+                    let mut seed = v["instructions"].to_string();
+                    for it in v["input"].as_array().into_iter().flatten().take(2) {
+                        seed.push_str(&it.to_string());
+                    }
+                    crate::sha256_hex(&seed)[..24].to_string()
+                },
+                str::to_string,
+            ));
+        }
+        if v.get("prompt_cache_key").is_none() {
+            v["prompt_cache_key"] = Value::String(self.cache.clone().unwrap_or_default());
+        }
+        let warm = self.app.settings().prewarm
+            && !self.created
+            && v["generate"] != Value::Bool(false)
+            && v["previous_response_id"].as_str().is_none_or(str::is_empty);
+        self.created = true;
+        let (frame, deferred) = if warm {
+            let mut w = v.clone();
+            w["generate"] = Value::Bool(false);
+            (w.to_string(), Some(v))
+        } else {
+            (v.to_string(), None)
+        };
+        self.start(frame, model, started, deferred, client).await
+    }
+
+    async fn start(&mut self, frame: String, model: String, started: i64, deferred: Option<Value>, client: &mut WebSocket) -> bool {
+        self.tried.clear();
+        self.pending = Some(Pending {
+            frame,
+            model,
+            started,
+            ttfb: None,
+            retries: 0,
+            acc: None,
+            deferred,
+        });
+        self.dispatch(client).await
+    }
+
+    async fn dispatch(&mut self, client: &mut WebSocket) -> bool {
+        loop {
+            if self.up.is_none()
+                && let Err(f) = self.connect().await
+            {
+                tracing::warn!(status = f.0, error = %f.1, "websocket request failed");
+                let model = self.pending.take().map(|p| p.model).unwrap_or_default();
+                self.app.record(
+                    Some(&self.key),
+                    codex::usage_row(&self.key.cfg.id, "", &model, "responses_ws", f.0, &Value::Null, now_ms(), now_ms()),
+                );
+                return client.send(ws::Message::Text(self.fail_frame(&f).into())).await.is_ok();
+            }
+            let acc = self.up.as_ref().map(|l| l.acc.clone());
+            let Some(frame) = self.pending.as_mut().map(|p| {
+                p.acc = acc;
+                p.frame.clone()
+            }) else {
+                return true;
+            };
+            if self.send_up(Message::Text(frame.into())).await {
+                return true;
+            }
+            if !self.drop_upstream(now_ms() + 15_000, "upstream websocket send failed") {
+                self.record(502, &Value::Null);
+                return client
+                    .send(ws::Message::Text(
+                        error_frame(502, "api_error", "upstream websocket closed", None).into(),
+                    ))
+                    .await
+                    .is_ok();
+            }
+        }
+    }
+
+    fn drop_upstream(&mut self, until: i64, msg: &str) -> bool {
+        if let Some(l) = self.up.take() {
+            if until > 0 {
+                l.acc.fail(until, msg.into());
+            }
+            self.tried.push(l.acc.id.clone());
+        }
+        let max = self.app.settings().max_attempts.max(1);
+        match self.pending.as_mut() {
+            Some(p) if p.ttfb.is_none() && p.retries + 1 < max => {
+                p.retries += 1;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn cool(&self, until: i64, msg: &str) {
+        if until > 0
+            && let Some(l) = self.up.as_ref()
+        {
+            l.acc.fail(until, msg.into());
+        }
+    }
+
+    async fn on_client(&mut self, m: ws::Message, client: &mut WebSocket) -> bool {
+        if let ws::Message::Text(t) = &m
+            && event_type(t) == "response.create"
+            && let Ok(v) = serde_json::from_str::<Value>(t)
+            && v["type"] == "response.create"
+        {
+            return self.on_create(v, client).await;
+        }
+        let close = matches!(m, ws::Message::Close(_));
+        if let Some(u) = to_upstream(m)
+            && self.up.is_some()
+        {
+            self.send_up(u).await;
+        }
+        !close
+    }
+
+    async fn on_upstream(&mut self, m: Option<Result<Message, tung::Error>>, client: &mut WebSocket) -> bool {
+        let m = match m {
+            Some(Ok(Message::Ping(_) | Message::Pong(_) | Message::Frame(_))) => return true,
+            Some(Ok(Message::Close(f))) => Err(Some(f)),
+            Some(Ok(m)) => Ok(m),
+            Some(Err(_)) | None => Err(None),
+        };
+        let m = match m {
+            Ok(m) => m,
+            Err(close) => {
+                let Some(started) = self.pending.as_ref().map(|p| p.ttfb.is_some()) else {
+                    self.up = None;
+                    return true;
+                };
+                if started {
+                    self.record(502, &Value::Null);
+                    let _ = client.send(to_client(Message::Close(close.flatten())).unwrap()).await;
+                    return false;
+                }
+                if self.drop_upstream(now_ms() + 10_000, "upstream websocket closed before first event") {
+                    tracing::warn!("upstream websocket closed before first event, failing over");
+                    return self.dispatch(client).await;
+                }
+                self.record(502, &Value::Null);
+                let f = error_frame(502, "api_error", "upstream websocket closed before first event", None);
+                return client.send(ws::Message::Text(f.into())).await.is_ok();
+            }
+        };
+        let mut warm_done = None;
+        let warming = self.pending.as_ref().is_some_and(|p| p.deferred.is_some());
+        if let Message::Text(t) = &m {
+            let kind = event_type(t);
+            if self.pending.as_ref().is_some_and(|p| p.ttfb.is_none()) {
+                if kind == "error" {
+                    let v: Value = serde_json::from_str(t).unwrap_or_default();
+                    let status = v["status"].as_u64().or(v["status_code"].as_u64()).unwrap_or(0) as u16;
+                    if let Some(until) = retry_until(status, &v["error"]) {
+                        let msg = v["error"]["message"].as_str().unwrap_or("upstream error").to_string();
+                        if self
+                            .pending
+                            .as_ref()
+                            .is_some_and(|p| p.retries + 1 < self.app.settings().max_attempts.max(1))
+                        {
+                            self.drop_upstream(until, &msg);
+                            tracing::warn!(status, error = %msg, "upstream websocket error before first event, failing over");
+                            return self.dispatch(client).await;
+                        }
+                        self.cool(until, &msg);
+                    }
+                } else if let Some(p) = self.pending.as_mut() {
+                    p.ttfb = Some(now_ms());
+                    self.tried.clear();
+                }
+            }
+            match kind {
+                "codex.rate_limits" => {
+                    if let (Ok(v), Some(l)) = (serde_json::from_str::<Value>(t), self.up.as_ref()) {
+                        codex::apply_rate_event(&l.acc, &v);
+                    }
+                }
+                "response.completed" | "response.incomplete" | "response.failed" => {
+                    let v: Value = serde_json::from_str(t).unwrap_or_default();
+                    let resp = &v["response"];
+                    let status = match resp["status"].as_str() {
+                        Some("completed") => 200,
+                        Some("incomplete") => 206,
+                        _ => 502,
+                    };
+                    if kind == "response.failed"
+                        && let Some(reset) = codex::limit_reset_from_error(&json!({"error": resp["error"]}))
+                    {
+                        self.cool(reset, resp["error"]["message"].as_str().unwrap_or("rate limited"));
+                    }
+                    if let Some(mut real) = self.pending.as_mut().and_then(|p| p.deferred.take()) {
+                        if let (200, Some(id)) = (status, resp["id"].as_str()) {
+                            real["previous_response_id"] = Value::String(id.to_string());
+                            real["input"] = json!([]);
+                        }
+                        warm_done = Some(real);
+                    }
+                    self.record(status, resp);
+                }
+                "error" => {
+                    let v: Value = serde_json::from_str(t).unwrap_or_default();
+                    let status = v["status"].as_u64().unwrap_or(502) as u16;
+                    warm_done = self.pending.as_mut().and_then(|p| p.deferred.take());
+                    self.record(status, &Value::Null);
+                }
+                _ => {}
+            }
+        }
+        if let Some(real) = warm_done {
+            let model = real["model"].as_str().unwrap_or_default().to_string();
+            return self.start(real.to_string(), model, now_ms(), None, client).await;
+        }
+        if warming {
+            return true;
+        }
+        match to_client(m) {
+            Some(cm) => client.send(cm).await.is_ok(),
+            None => true,
+        }
+    }
+
+    async fn run(mut self, mut client: WebSocket) {
+        let s = self.app.settings();
+        let first = Duration::from_secs(s.first_event_timeout_secs.max(5));
+        let idle = Duration::from_secs(s.idle_timeout_secs.max(30));
+        loop {
+            let wait = self.pending.as_ref().map(|p| if p.ttfb.is_none() { first } else { idle });
+            let up = &mut self.up;
+            let ev = tokio::select! {
+                m = client.recv() => Ev::Client(m),
+                m = async { match up { Some(l) => l.ws.next().await, None => std::future::pending().await } } => Ev::Up(m),
+                _ = async { match wait { Some(d) => tokio::time::sleep(d).await, None => std::future::pending().await } } => Ev::Timeout,
+            };
+            let alive = match ev {
+                Ev::Client(Some(Ok(m))) => self.on_client(m, &mut client).await,
+                Ev::Client(_) => false,
+                Ev::Up(m) => self.on_upstream(m, &mut client).await,
+                Ev::Timeout => {
+                    if self.drop_upstream(now_ms() + 10_000, "timed out waiting for first event") {
+                        self.dispatch(&mut client).await
+                    } else {
+                        self.record(504, &Value::Null);
+                        let _ = client
+                            .send(ws::Message::Text(error_frame(504, "api_error", "upstream timed out", None).into()))
+                            .await;
+                        false
+                    }
+                }
+            };
+            if !alive {
+                break;
+            }
+        }
+        if self.pending.is_some() {
+            self.record(499, &Value::Null);
+        }
+        if let Some(mut l) = self.up.take() {
+            let _ = l.ws.close(None).await;
+        }
+    }
+}
+
+pub async fn upgrade(State(app): State<Arc<App>>, h: HeaderMap, ws: WebSocketUpgrade) -> Response {
+    let Some(key) = proxy::auth(&app, &h) else {
+        return proxy::error(Kind::Responses, 401, "invalid or missing api key");
+    };
+    if let Err(e) = key.check(now_ms()) {
+        return proxy::error(Kind::Responses, 429, &e);
+    }
+    let mut conn = Conn {
+        app,
+        key,
+        cache: header_session(&h),
+        h,
+        up: None,
+        tried: vec![],
+        pending: None,
+        created: false,
+    };
+    let mut extra = HeaderMap::new();
+    if conn.cache.is_some() {
+        match conn.connect().await {
+            Ok(hs) => extra = hs,
+            Err(f) => {
+                tracing::warn!(status = f.0, error = %f.1, "websocket handshake failed");
+                return conn.fail_response(&f);
+            }
+        }
+    }
+    let mut res = ws.on_upgrade(move |socket| conn.run(socket));
+    for (k, v) in extra.iter() {
+        res.headers_mut().append(HeaderName::clone(k), v.clone());
+    }
+    res
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::state::{AccountCfg, App, KeyCfg, Settings};
+    use crate::store::Store;
+    use axum::extract::ws::{Message as CMsg, WebSocketUpgrade};
+    use axum::http::{HeaderMap, StatusCode};
+    use axum::response::IntoResponse;
+    use axum::routing::get;
+    use futures::{SinkExt, StreamExt};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio_tungstenite::tungstenite::Message;
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+
+    const EVENTS: [&str; 3] = [
+        r#"{"type":"response.created","response":{"id":"resp_1"}}"#,
+        r#"{"type":"response.output_text.delta","delta":"hello"}"#,
+        r#"{"type":"response.completed","response":{"id":"resp_1","status":"completed","model":"gpt-5.4","output":[],"usage":{"input_tokens":10,"output_tokens":2,"total_tokens":12}}}"#,
+    ];
+
+    async fn mock_upstream(hits_b: Arc<AtomicUsize>) -> String {
+        let app = axum::Router::new().route(
+            "/codex/responses",
+            get(move |h: HeaderMap, ws: WebSocketUpgrade| {
+                let hits_b = hits_b.clone();
+                async move {
+                    if h["chatgpt-account-id"] == "acct-a" {
+                        return (
+                            StatusCode::TOO_MANY_REQUESTS,
+                            r#"{"error":{"type":"usage_limit_reached","resets_in_seconds":600}}"#,
+                        )
+                            .into_response();
+                    }
+                    if h.get("openai-beta").is_none_or(|v| v != super::BETA) || h.get("session_id").is_none_or(|v| v != "conv-1") {
+                        return (StatusCode::BAD_REQUEST, "bad handshake").into_response();
+                    }
+                    ws.on_upgrade(move |mut sock| async move {
+                        while let Some(Ok(CMsg::Text(t))) = sock.recv().await {
+                            if super::event_type(&t) != "response.create" {
+                                continue;
+                            }
+                            hits_b.fetch_add(1, Ordering::SeqCst);
+                            for e in EVENTS {
+                                let _ = sock.send(CMsg::Text(e.into())).await;
+                            }
+                        }
+                    })
+                }
+            }),
+        );
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = l.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(l, app).await.unwrap() });
+        format!("http://{addr}")
+    }
+
+    #[tokio::test]
+    async fn websocket_relays_events_after_failing_over_a_rate_limited_handshake() {
+        let hits_b = Arc::new(AtomicUsize::new(0));
+        let base = mock_upstream(hits_b.clone()).await;
+        let dir = std::env::temp_dir().join(format!("nanolb-ws-{}", crate::random_hex(4)));
+        let app = App::new(Store::open(&dir).unwrap(), "admin".into());
+        app.save_settings(Settings {
+            upstream_base: base,
+            ..Default::default()
+        });
+        let far = crate::now_ms() + 86_400_000;
+        for (id, priority) in [("a", 0), ("b", 1)] {
+            app.upsert_account(AccountCfg {
+                id: id.into(),
+                kind: "codex".into(),
+                enabled: true,
+                priority,
+                chatgpt_account_id: format!("acct-{id}"),
+                expires_at: far,
+                last_refresh: crate::now_ms(),
+                ..Default::default()
+            });
+        }
+        app.save_key(KeyCfg {
+            id: "k".into(),
+            name: "k".into(),
+            hash: crate::sha256_hex("nlb-test"),
+            prefix: "nlb-test".into(),
+            accounts: vec![],
+            models: vec![],
+            limits: vec![],
+            enabled: true,
+            expires_at: None,
+            created_at: 0,
+        });
+        let srv = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ws://{}/v1/responses", srv.local_addr().unwrap());
+        let probe = app.clone();
+        tokio::spawn(async move { axum::serve(srv, crate::router(app)).await.unwrap() });
+
+        let mut req = url.into_client_request().unwrap();
+        req.headers_mut().insert("authorization", "Bearer nlb-test".parse().unwrap());
+        req.headers_mut().insert("session_id", "conv-1".parse().unwrap());
+        let (mut sock, _) = tokio_tungstenite::connect_async(req).await.unwrap();
+        let create = serde_json::json!({"type": "response.create", "model": "gpt-5.4", "input": [], "stream": true});
+        sock.send(Message::Text(create.to_string().into())).await.unwrap();
+        let mut got = vec![];
+        while let Some(Ok(Message::Text(t))) = sock.next().await {
+            let done = super::event_type(&t) == "response.completed";
+            got.push(t.to_string());
+            if done {
+                break;
+            }
+        }
+
+        assert_eq!(got, EVENTS.map(String::from));
+        assert_eq!(hits_b.load(Ordering::SeqCst), 1);
+        assert!(!probe.account("a").unwrap().available(crate::now_ms()));
+    }
 }
