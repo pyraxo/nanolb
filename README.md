@@ -16,8 +16,7 @@ nanolb accepts four client API formats and sends each request to an upstream acc
 ## Quick start
 
 ```sh
-cargo build --release
-cp target/release/nanolb ~/.local/bin/          # any dir on PATH
+cargo install --path . --locked                 # installs to ~/.cargo/bin; reruns replace it safely
 nanolb up                                        # background server on 127.0.0.1:2455, data in ~/.nanolb
 nanolb down                                      # clean stop
 nanolb login                                     # device-code login, one per account
