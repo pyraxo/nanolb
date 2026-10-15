@@ -1,13 +1,11 @@
-use super::{Conn, Ev, Pending};
+use super::{Conn, Pending};
 use crate::app::{Provider, canonical_model};
 use crate::id::sha256_hex;
 use crate::server::ws::frames::{close_to_client, error_message, event_type, status_of, to_client, to_upstream};
 use crate::time::now_ms;
 use crate::upstream::{self, codex};
 use axum::extract::ws::{self, WebSocket};
-use futures::StreamExt;
 use serde_json::{Value, json};
-use std::time::Duration;
 use tokio_tungstenite::tungstenite::protocol::CloseFrame;
 use tokio_tungstenite::tungstenite::{self as tung, Message};
 
@@ -103,7 +101,7 @@ impl Conn {
         }
     }
 
-    async fn on_client(&mut self, m: ws::Message, client: &mut WebSocket) -> bool {
+    pub(super) async fn on_client(&mut self, m: ws::Message, client: &mut WebSocket) -> bool {
         if let ws::Message::Text(t) = &m
             && event_type(t) == "response.create"
             && let Ok(v) = serde_json::from_str::<Value>(t)
@@ -206,7 +204,7 @@ impl Conn {
         }
     }
 
-    async fn on_upstream(&mut self, m: Option<Result<Message, tung::Error>>, client: &mut WebSocket) -> bool {
+    pub(super) async fn on_upstream(&mut self, m: Option<Result<Message, tung::Error>>, client: &mut WebSocket) -> bool {
         let m = match m {
             Some(Ok(Message::Ping(_) | Message::Pong(_) | Message::Frame(_))) => return true,
             Some(Ok(Message::Close(f))) => return self.on_closed(f, client).await,
@@ -233,36 +231,7 @@ impl Conn {
         }
     }
 
-    pub(in crate::server::ws) async fn run(mut self, mut client: WebSocket) {
-        let first = Duration::from_secs(self.settings.first_event_timeout_secs.max(5));
-        let idle = Duration::from_secs(self.settings.idle_timeout_secs.max(30));
-        loop {
-            let wait = self.pending.as_ref().map(|p| if p.ttfb.is_none() { first } else { idle });
-            let up = &mut self.up;
-            let ev = tokio::select! {
-                m = client.recv() => Ev::Client(m),
-                m = async { match up { Some(l) => l.ws.next().await, None => std::future::pending().await } } => Ev::Up(m),
-                () = async { match wait { Some(d) => tokio::time::sleep(d).await, None => std::future::pending().await } } => Ev::Timeout,
-            };
-            let alive = match ev {
-                Ev::Client(Some(Ok(m))) => self.on_client(m, &mut client).await,
-                Ev::Client(_) => false,
-                Ev::Up(m) => self.on_upstream(m, &mut client).await,
-                Ev::Timeout => self.on_timeout(&mut client).await,
-            };
-            if !alive {
-                break;
-            }
-        }
-        if self.pending.is_some() {
-            self.record(499, &Value::Null);
-        }
-        if let Some(mut l) = self.up.take() {
-            let _ = l.ws.close(None).await;
-        }
-    }
-
-    async fn on_timeout(&mut self, client: &mut WebSocket) -> bool {
+    pub(super) async fn on_timeout(&mut self, client: &mut WebSocket) -> bool {
         if self.drop_upstream(now_ms() + 10_000, "timed out waiting for first event") {
             return self.dispatch(client).await;
         }
