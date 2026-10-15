@@ -65,7 +65,6 @@ async fn dispatch(cmd: Cmd) -> anyhow::Result<()> {
         Cmd::Up { host, port } => daemon::up(&c, host, port).await,
         Cmd::Down => daemon::down().await,
         Cmd::Service { cmd } => service::service(cmd).await,
-        Cmd::Status => show(&c, "status", json!({})).await,
         Cmd::Login { label, browser } => {
             let account = if browser {
                 login::login_browser(&c, label).await?
@@ -77,53 +76,62 @@ async fn dispatch(cmd: Cmd) -> anyhow::Result<()> {
         }
         Cmd::Accounts { cmd } => commands::accounts(&c, cmd).await,
         Cmd::Keys { cmd } => commands::keys(&c, cmd).await,
+        Cmd::ResetCredits { cmd } => commands::reset_credits(&c, cmd).await,
+        Cmd::Sessions { cmd } => commands::sessions(&c, cmd).await,
+        Cmd::CodexConfig { key } => {
+            codex_config::codex_config(&c.url, key);
+            Ok(())
+        }
+        Cmd::Top { interval } => tui::run(c, interval).await,
+        cmd => {
+            let (op, args) = op_call(cmd)?;
+            show(&c, &op, args).await
+        }
+    }
+}
+
+fn op_call(cmd: Cmd) -> anyhow::Result<(String, Value)> {
+    let (op, args) = match cmd {
+        Cmd::Status => ("status", json!({})),
+        Cmd::Models => ("models", json!({})),
+        Cmd::Requests { limit } => ("requests", json!({ "limit": limit })),
         Cmd::Usage { since, group } => {
             let mut args = json!({ "since": since });
             if let Some(g) = group {
                 args["group"] = json!(g);
             }
-            show(&c, "usage", args).await
+            ("usage", args)
         }
-        Cmd::Requests { limit } => show(&c, "requests", json!({ "limit": limit })).await,
-        Cmd::Settings { cmd: SettingsCmd::Get } => show(&c, "settings_get", json!({})).await,
+        Cmd::Settings { cmd: SettingsCmd::Get } => ("settings_get", json!({})),
         Cmd::Settings {
             cmd: SettingsCmd::Set { key, value },
         } => {
             let value = serde_json::from_str(&value).unwrap_or_else(|_| json!(value));
-            show(&c, "settings_update", json!({ key: value })).await
+            ("settings_update", json!({ key: value }))
         }
-        Cmd::Models => show(&c, "models", json!({})).await,
-        Cmd::ResetCredits { cmd } => commands::reset_credits(&c, cmd).await,
         Cmd::Plan {
             work_start,
             lookback,
             apply,
-        } => {
-            let args = json!({ "work_start": work_start, "lookback": lookback, "apply": apply });
-            show(&c, "plan", args).await
-        }
+        } => ("plan", json!({ "work_start": work_start, "lookback": lookback, "apply": apply })),
         Cmd::Analytics {
             since,
             view,
             by,
             bucket,
             limit,
-        } => {
-            let args = json!({ "since": since, "view": view, "by": by, "bucket": bucket, "limit": limit });
-            show(&c, "analytics", args).await
-        }
-        Cmd::Sessions { cmd } => commands::sessions(&c, cmd).await,
+        } => (
+            "analytics",
+            json!({ "since": since, "view": view, "by": by, "bucket": bucket, "limit": limit }),
+        ),
         Cmd::Call { op, json } => {
             let args = match json {
                 Some(j) => serde_json::from_str(&j).map_err(|e| anyhow!("invalid JSON: {e}"))?,
                 None => json!({}),
             };
-            show(&c, &op, args).await
+            return Ok((op, args));
         }
-        Cmd::CodexConfig { key } => {
-            codex_config::codex_config(&c.url, key);
-            Ok(())
-        }
-        Cmd::Top { interval } => tui::run(c, interval).await,
-    }
+        _ => return Err(anyhow!("not an admin command")),
+    };
+    Ok((op.to_owned(), args))
 }

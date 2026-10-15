@@ -57,24 +57,7 @@ fn ago(ts: &Value) -> String {
     }
 }
 
-fn draw(f: &mut Frame<'_>, snap: &Snapshot, state: &mut TableState) {
-    let [head, accounts, requests, foot] = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Min(5),
-        Constraint::Length(17),
-        Constraint::Length(1),
-    ])
-    .areas(f.area());
-
-    f.render_widget(
-        Line::from(format!(
-            "24h  requests {}  tokens {}  cost ${:.4}",
-            snap.total_requests, snap.total_tokens, snap.total_cost
-        ))
-        .bold(),
-        head,
-    );
-
+fn accounts_table(snap: &Snapshot) -> Table<'_> {
     let rows = snap.accounts.iter().map(|a| {
         let name = a["label"]
             .as_str()
@@ -97,7 +80,7 @@ fn draw(f: &mut Frame<'_>, snap: &Snapshot, state: &mut TableState) {
             a["last_error"]["message"].as_str().unwrap_or("").to_owned(),
         ])
     });
-    let table = Table::new(
+    Table::new(
         rows,
         [
             Constraint::Length(28),
@@ -112,9 +95,10 @@ fn draw(f: &mut Frame<'_>, snap: &Snapshot, state: &mut TableState) {
     )
     .header(Row::new(["account", "plan", "state", "5h", "weekly", "resets", "inflight", "last error"]).bold())
     .row_highlight_style(Style::new().add_modifier(Modifier::REVERSED))
-    .block(Block::bordered().title("accounts"));
-    f.render_stateful_widget(table, accounts, state);
+    .block(Block::bordered().title("accounts"))
+}
 
+fn requests_table(snap: &Snapshot) -> Table<'_> {
     let rows = snap.requests.iter().map(|r| {
         Row::new(vec![
             r["ts"].as_str().unwrap_or("-").chars().skip(11).take(8).collect::<String>(),
@@ -126,7 +110,7 @@ fn draw(f: &mut Frame<'_>, snap: &Snapshot, state: &mut TableState) {
             format!("{}ms", r["latency_ms"]),
         ])
     });
-    let table = Table::new(
+    Table::new(
         rows,
         [
             Constraint::Length(9),
@@ -139,8 +123,30 @@ fn draw(f: &mut Frame<'_>, snap: &Snapshot, state: &mut TableState) {
         ],
     )
     .header(Row::new(["time", "model", "status", "input", "output", "cost", "latency"]).bold())
-    .block(Block::bordered().title("recent requests"));
-    f.render_widget(table, requests);
+    .block(Block::bordered().title("recent requests"))
+}
+
+fn draw(f: &mut Frame<'_>, snap: &Snapshot, state: &mut TableState) {
+    let [head, accounts, requests, foot] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Min(5),
+        Constraint::Length(17),
+        Constraint::Length(1),
+    ])
+    .areas(f.area());
+
+    f.render_widget(
+        Line::from(format!(
+            "24h  requests {}  tokens {}  cost ${:.4}",
+            snap.total_requests, snap.total_tokens, snap.total_cost
+        ))
+        .bold(),
+        head,
+    );
+
+    f.render_stateful_widget(accounts_table(snap), accounts, state);
+
+    f.render_widget(requests_table(snap), requests);
 
     f.render_widget(
         Line::from(format!(
