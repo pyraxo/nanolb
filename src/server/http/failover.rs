@@ -42,6 +42,23 @@ struct Attempt<'a> {
     first_timeout: Duration,
 }
 
+const MIN_COMPRESS_BYTES: usize = 1024;
+const ZSTD_LEVEL: i32 = 3;
+
+thread_local! {
+    static ZSTD: std::cell::RefCell<Option<zstd::bulk::Compressor<'static>>> = const { std::cell::RefCell::new(None) };
+}
+
+fn zstd_compress(raw: &[u8]) -> std::io::Result<Vec<u8>> {
+    ZSTD.with_borrow_mut(|slot| {
+        let c = match slot {
+            Some(c) => c,
+            None => slot.insert(zstd::bulk::Compressor::new(ZSTD_LEVEL)?),
+        };
+        c.compress(raw)
+    })
+}
+
 pub(super) async fn send(
     job: &Job,
     provider: Provider,
@@ -51,7 +68,7 @@ pub(super) async fn send(
 ) -> Result<Upstream, UpstreamError> {
     let raw = serde_json::to_vec(up)?;
     let compress = provider == Provider::Codex && job.settings.compress_upstream;
-    let (body, compressed) = match compress.then(|| zstd::encode_all(raw.as_slice(), 3)) {
+    let (body, compressed) = match (compress && raw.len() >= MIN_COMPRESS_BYTES).then(|| zstd_compress(&raw)) {
         Some(Ok(c)) => (Bytes::from(c), true),
         _ => (Bytes::from(raw), false),
     };
