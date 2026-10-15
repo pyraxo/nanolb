@@ -97,15 +97,17 @@ impl Accounts {
         if let Some(a) = accs.iter().find(|a| a.id == query) {
             return Ok(a.clone());
         }
-        let hits: Vec<&Arc<Account>> = accs
+        let hits: Vec<Arc<Account>> = accs
             .iter()
             .filter(|a| {
                 let c = a.cfg.read();
                 c.email.eq_ignore_ascii_case(query) || c.label.eq_ignore_ascii_case(query)
             })
+            .cloned()
             .collect();
+        drop(accs);
         match hits.as_slice() {
-            [a] => Ok((*a).clone()),
+            [a] => Ok(a.clone()),
             [] => Err(LookupError::NotFound(query.to_owned())),
             many => Err(LookupError::Ambiguous {
                 query: query.to_owned(),
@@ -125,12 +127,14 @@ impl Accounts {
     pub(crate) fn upsert(&self, store: &Store, cfg: AccountCfg) -> Result<Arc<Account>, StoreError> {
         store.put("account", &cfg.id, &cfg)?;
         let mut accs = self.list.write();
-        if let Some(a) = accs.iter().find(|a| a.id == cfg.id) {
+        if let Some(a) = accs.iter().find(|a| a.id == cfg.id).cloned() {
+            drop(accs);
             *a.cfg.write() = cfg;
-            return Ok(a.clone());
+            return Ok(a);
         }
         let a = Account::new(cfg);
         accs.push(a.clone());
+        drop(accs);
         Ok(a)
     }
 
@@ -181,7 +185,7 @@ impl Accounts {
                 }
                 plan_weights(&c.plan)
             };
-            let r = a.rl.lock();
+            let r = *a.rl.lock();
             if r.updated_at == 0 {
                 continue;
             }
@@ -189,7 +193,6 @@ impl Accounts {
                 (r.primary_used, r.primary_window_min, r.primary_reset_at),
                 (r.secondary_used, r.secondary_window_min, r.secondary_reset_at),
             ];
-            drop(r);
             if wins[1].1 <= 0 && wins[0].1 >= 10_080 {
                 wins = [(0.0, 0, 0), wins[0]];
             }
@@ -223,11 +226,13 @@ impl Accounts {
         let now = now_ms();
         let mut earliest: Option<i64> = None;
         for a in self.list.read().iter() {
-            let c = a.cfg.read();
-            if c.provider != provider || !c.enabled || !permitted(allowed, &a.id) {
-                continue;
+            {
+                let c = a.cfg.read();
+                if c.provider != provider || !c.enabled || !permitted(allowed, &a.id) {
+                    continue;
+                }
             }
-            let r = a.rl.lock();
+            let r = *a.rl.lock();
             let mut t = a.cooldown_until.load(Relaxed);
             for (used, reset) in [(r.primary_used, r.primary_reset_at), (r.secondary_used, r.secondary_reset_at)] {
                 if used >= 100.0 && reset > now {

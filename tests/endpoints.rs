@@ -13,7 +13,7 @@ fn recorder(seen: &Arc<Mutex<Vec<String>>>) -> axum::routing::MethodRouter {
     post(move |h: HeaderMap| {
         let log = log.clone();
         async move {
-            log.lock().push(h["chatgpt-account-id"].to_str().unwrap().to_owned());
+            log.lock().push(h["chatgpt-account-id"].to_str().unwrap_or_default().to_owned());
             Json(json!({"status": "success"}))
         }
     })

@@ -40,10 +40,6 @@ impl Sessions {
         self.map.lock().get(session).map(|p| p.account.clone())
     }
 
-    pub(crate) fn get(&self, session: &str) -> Option<Pin> {
-        self.map.lock().get(session).cloned()
-    }
-
     pub(crate) fn touch(&self, session: &str, now: i64) {
         if let Some(p) = self.map.lock().get_mut(session) {
             p.at = now;

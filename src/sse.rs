@@ -1,6 +1,6 @@
 use bytes::Bytes;
 
-pub fn frame(event: Option<&str>, data: &str) -> Bytes {
+pub(crate) fn frame(event: Option<&str>, data: &str) -> Bytes {
     let mut s = String::with_capacity(data.len() + 32);
     if let Some(e) = event {
         s.push_str("event: ");

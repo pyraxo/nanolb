@@ -5,7 +5,7 @@ mod writer;
 pub(crate) use usage::{Endpoint, Usage, UsageMeta};
 
 use parking_lot::Mutex;
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, Params, Row, params};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
@@ -52,27 +52,33 @@ impl Store {
         })
     }
 
-    pub(crate) fn load<T: DeserializeOwned>(&self, tbl: &str) -> Result<Vec<T>, StoreError> {
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the prepared statement borrows the connection guard"
+    )]
+    fn query<T, P: Params>(&self, sql: &str, params: P, f: impl FnMut(&Row<'_>) -> rusqlite::Result<T>) -> Result<Vec<T>, StoreError> {
         let c = self.conn.lock();
-        let mut st = c.prepare("SELECT json FROM kv WHERE tbl=?1")?;
-        let rows = st
-            .query_map([tbl], |r| r.get::<_, String>(0))?
-            .filter_map(|s| serde_json::from_str(&s.ok()?).ok())
-            .collect();
+        let mut st = c.prepare(sql)?;
+        let rows = st.query_map(params, f)?.filter_map(Result::ok).collect();
         Ok(rows)
     }
 
+    pub(crate) fn load<T: DeserializeOwned>(&self, tbl: &str) -> Result<Vec<T>, StoreError> {
+        Ok(self
+            .query("SELECT json FROM kv WHERE tbl=?1", [tbl], |r| r.get::<_, String>(0))?
+            .into_iter()
+            .filter_map(|s| serde_json::from_str(&s).ok())
+            .collect())
+    }
+
     pub(crate) fn load_raw(&self, tbl: &str) -> Result<Vec<(String, Value)>, StoreError> {
-        let c = self.conn.lock();
-        let mut st = c.prepare("SELECT id, json FROM kv WHERE tbl=?1")?;
-        let rows = st
-            .query_map([tbl], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
-            .filter_map(|r| {
-                let (id, s) = r.ok()?;
-                Some((id, serde_json::from_str(&s).ok()?))
-            })
-            .collect();
-        Ok(rows)
+        Ok(self
+            .query("SELECT id, json FROM kv WHERE tbl=?1", [tbl], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })?
+            .into_iter()
+            .filter_map(|(id, s)| Some((id, serde_json::from_str(&s).ok()?)))
+            .collect())
     }
 
     pub(crate) fn put<T: Serialize>(&self, tbl: &str, id: &str, v: &T) -> Result<(), StoreError> {

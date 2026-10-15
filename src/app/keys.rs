@@ -36,7 +36,7 @@ impl Keys {
                 let counters = totals
                     .iter()
                     .map(|(w, m)| {
-                        let c = m.get(&cfg.id).copied().unwrap_or(Counter {
+                        let c = m.get(&cfg.id).copied().unwrap_or_else(|| Counter {
                             start: w.start(now),
                             ..Counter::default()
                         });
@@ -75,6 +75,7 @@ impl Keys {
         let counters = keys.get(&cfg.hash).map(|k| k.counters()).unwrap_or_default();
         let k = Arc::new(Key::new(cfg, counters));
         keys.insert(k.cfg.hash.clone(), k.clone());
+        drop(keys);
         Ok(k)
     }
 

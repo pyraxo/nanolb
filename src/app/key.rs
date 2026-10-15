@@ -132,6 +132,7 @@ impl Key {
         self.counters.lock().clone()
     }
 
+    #[expect(clippy::significant_drop_tightening, reason = "the counter lock spans every limit of one check")]
     pub(crate) fn check(&self, now: i64) -> Result<(), KeyRejected> {
         if !self.cfg.enabled {
             return Err(KeyRejected::Disabled);
@@ -152,6 +153,7 @@ impl Key {
         Ok(())
     }
 
+    #[expect(clippy::significant_drop_tightening, reason = "all windows are updated under one lock")]
     pub(crate) fn add(&self, now: i64, tokens: u64, cost: f64) {
         let mut cs = self.counters.lock();
         for w in Window::ALL {

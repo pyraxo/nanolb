@@ -43,7 +43,7 @@ pub struct App {
 fn http_client() -> reqwest::Client {
     reqwest::Client::builder()
         .tcp_nodelay(true)
-        .pool_idle_timeout(Duration::from_secs(300))
+        .pool_idle_timeout(Duration::from_mins(5))
         .pool_max_idle_per_host(64)
         .http2_adaptive_window(true)
         .connect_timeout(Duration::from_secs(10))

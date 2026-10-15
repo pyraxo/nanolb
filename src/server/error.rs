@@ -60,10 +60,6 @@ impl ApiError {
             )
         }
     }
-
-    pub(crate) const fn status(&self) -> StatusCode {
-        self.status
-    }
 }
 
 impl IntoResponse for ApiError {

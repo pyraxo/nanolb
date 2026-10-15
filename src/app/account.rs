@@ -75,7 +75,7 @@ fn warm_prompt() -> String {
     "hi".into()
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 pub(crate) struct RateLimit {
     pub(crate) primary_used: f64,
     pub(crate) primary_window_min: i64,

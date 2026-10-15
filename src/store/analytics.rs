@@ -13,20 +13,13 @@ impl Store {
                  SELECT CAST({g} AS TEXT) AS g, {metric} AS v FROM usage WHERE ts>=?1 AND status<400)) \
              GROUP BY g"
         );
-        let c = self.conn.lock();
-        let mut st = c.prepare(&sql)?;
-        let rows = st
-            .query_map([since_ms], |r| {
-                Ok((r.get::<_, String>(0)?, (r.get::<_, i64>(1)?, r.get::<_, i64>(2)?)))
-            })?
-            .filter_map(Result::ok)
-            .collect();
-        Ok(rows)
+        let rows = self.query(&sql, [since_ms], |r| {
+            Ok((r.get::<_, String>(0)?, (r.get::<_, i64>(1)?, r.get::<_, i64>(2)?)))
+        })?;
+        Ok(rows.into_iter().collect())
     }
 
     fn rows(&self, sql: &str, since_ms: i64, limit: Option<i64>, cols: &[&str]) -> Result<Vec<Value>, StoreError> {
-        let c = self.conn.lock();
-        let mut st = c.prepare(sql)?;
         let map = |r: &Row<'_>| {
             let mut o = Map::new();
             for (i, name) in cols.iter().enumerate() {
@@ -41,11 +34,10 @@ impl Store {
             }
             Ok(Value::Object(o))
         };
-        let it = match limit {
-            Some(l) => st.query_map(params![since_ms, l], map),
-            None => st.query_map(params![since_ms], map),
-        };
-        Ok(it?.filter_map(Result::ok).collect())
+        match limit {
+            Some(l) => self.query(sql, params![since_ms, l], map),
+            None => self.query(sql, params![since_ms], map),
+        }
     }
 
     fn top(&self, col: &str, order: usize, since_ms: i64, limit: i64) -> Result<Vec<Value>, StoreError> {

@@ -135,13 +135,11 @@ pub(crate) struct KeyTotal {
 
 impl Store {
     pub(crate) fn recent(&self, limit: u32) -> Result<Vec<Usage>, StoreError> {
-        let c = self.conn.lock();
-        let mut st = c.prepare(
+        let rows = self.query(
             "SELECT ts,key_id,account_id,model,endpoint,status,input,cached,output,reasoning,cost,latency_ms,ttfb_ms \
              FROM usage ORDER BY ts DESC LIMIT ?1",
-        )?;
-        let rows = st
-            .query_map([limit], |r| {
+            [limit],
+            |r| {
                 Ok(Usage {
                     ts: r.get(0)?,
                     key_id: r.get(1)?,
@@ -157,26 +155,24 @@ impl Store {
                     latency_ms: r.get(11)?,
                     ttfb_ms: r.get(12)?,
                 })
-            })?
-            .filter_map(Result::ok)
-            .collect();
+            },
+        )?;
         Ok(rows)
     }
 
     pub(crate) fn key_totals_since(&self, since_ms: i64) -> Result<Vec<KeyTotal>, StoreError> {
-        let c = self.conn.lock();
-        let mut st = c.prepare("SELECT key_id, SUM(input+output), SUM(cost), COUNT(*) FROM usage WHERE ts>=?1 GROUP BY key_id")?;
-        let rows = st
-            .query_map([since_ms], |r| {
+        let rows = self.query(
+            "SELECT key_id, SUM(input+output), SUM(cost), COUNT(*) FROM usage WHERE ts>=?1 GROUP BY key_id",
+            [since_ms],
+            |r| {
                 Ok(KeyTotal {
                     key_id: r.get(0)?,
                     tokens: non_negative(r.get(1)?),
                     cost: r.get(2)?,
                     requests: non_negative(r.get(3)?),
                 })
-            })?
-            .filter_map(Result::ok)
-            .collect();
+            },
+        )?;
         Ok(rows)
     }
 
@@ -194,25 +190,20 @@ impl Store {
              SUM(status>=400), CAST(AVG(latency_ms) AS INTEGER), CAST(AVG(ttfb_ms) AS INTEGER), MAX(ts) \
              FROM usage WHERE ts>=?1 GROUP BY 1 ORDER BY 1"
         );
-        let c = self.conn.lock();
-        let mut st = c.prepare(&sql)?;
-        let rows: Vec<Value> = st
-            .query_map([since_ms], |r| {
-                let group = match r.get::<_, Sql>(0)? {
-                    Sql::Integer(i) => Value::from(ts_iso(i)),
-                    Sql::Text(s) => Value::from(s),
-                    _ => Value::Null,
-                };
-                Ok(json!({
-                    "group": group, "requests": r.get::<_, i64>(1)?, "input_tokens": r.get::<_, i64>(2)?,
-                    "cached_tokens": r.get::<_, i64>(3)?, "output_tokens": r.get::<_, i64>(4)?,
-                    "reasoning_tokens": r.get::<_, i64>(5)?, "cost_usd": r.get::<_, f64>(6)?,
-                    "errors": r.get::<_, i64>(7)?, "avg_latency_ms": r.get::<_, i64>(8)?,
-                    "avg_ttfb_ms": r.get::<_, i64>(9)?, "last_at": ts_iso(r.get::<_, i64>(10)?),
-                }))
-            })?
-            .filter_map(Result::ok)
-            .collect();
+        let rows: Vec<Value> = self.query(&sql, [since_ms], |r| {
+            let group = match r.get::<_, Sql>(0)? {
+                Sql::Integer(i) => Value::from(ts_iso(i)),
+                Sql::Text(s) => Value::from(s),
+                _ => Value::Null,
+            };
+            Ok(json!({
+                "group": group, "requests": r.get::<_, i64>(1)?, "input_tokens": r.get::<_, i64>(2)?,
+                "cached_tokens": r.get::<_, i64>(3)?, "output_tokens": r.get::<_, i64>(4)?,
+                "reasoning_tokens": r.get::<_, i64>(5)?, "cost_usd": r.get::<_, f64>(6)?,
+                "errors": r.get::<_, i64>(7)?, "avg_latency_ms": r.get::<_, i64>(8)?,
+                "avg_ttfb_ms": r.get::<_, i64>(9)?, "last_at": ts_iso(r.get::<_, i64>(10)?),
+            }))
+        })?;
         Ok(Value::from(rows))
     }
 

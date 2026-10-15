@@ -1,9 +1,14 @@
 use super::App;
-use super::account::{Account, Provider};
+use super::account::{Account, Provider, RateLimit};
 use super::settings::Strategy;
 use crate::time::now_ms;
 use std::sync::Arc;
 use std::sync::atomic::Ordering::Relaxed;
+
+#[expect(clippy::cast_possible_truncation, reason = "a used percentage stays within 0 to 100")]
+fn used_percent(r: &RateLimit, now: i64) -> i64 {
+    r.used(now) as i64
+}
 
 impl App {
     pub(crate) fn pick(&self, provider: Provider, allowed: &[String], exclude: &[String], session: Option<&str>) -> Option<Arc<Account>> {
@@ -39,7 +44,7 @@ impl App {
                 .map(|x| x.2),
             Strategy::Burn => cands.iter().copied().min_by_key(|a| {
                 let r = a.rl.lock();
-                (r.weekly_reset(now), -(r.used(now) as i64), a.cfg.read().priority)
+                (r.weekly_reset(now), -used_percent(&r, now), a.cfg.read().priority)
             }),
         }?
         .clone();

@@ -8,14 +8,14 @@ use serde_json::{Value, json};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tempfile::TempDir;
 
-pub async fn spawn(router: Router) -> String {
+pub(crate) async fn spawn(router: Router) -> String {
     let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let addr = l.local_addr().expect("local addr");
     tokio::spawn(async move { axum::serve(l, router).await.expect("serve") });
     format!("http://{addr}")
 }
 
-pub fn fake_jwt(account_id: &str, email: &str, exp_ms: i64) -> String {
+pub(crate) fn fake_jwt(account_id: &str, email: &str, exp_ms: i64) -> String {
     let claims = json!({
         "email": email,
         "exp": exp_ms / 1000,
@@ -29,14 +29,14 @@ fn in_a_day_ms() -> i64 {
     i64::try_from(now).expect("ms fit in i64") + 86_400_000
 }
 
-pub struct Harness {
-    pub url: String,
+pub(crate) struct Harness {
+    pub(crate) url: String,
     http: reqwest::Client,
     _home: TempDir,
 }
 
 impl Harness {
-    pub async fn start(upstream_base: &str, mut settings: Value) -> Self {
+    pub(crate) async fn start(upstream_base: &str, mut settings: Value) -> Self {
         let home = tempfile::tempdir().expect("temp home");
         let store = Store::open(&home.path().join("nanolb.db")).expect("open store");
         let app = App::new(store, "admin".into()).expect("app");
@@ -50,7 +50,7 @@ impl Harness {
         h
     }
 
-    pub async fn op(&self, name: &str, args: Value) -> Value {
+    pub(crate) async fn op(&self, name: &str, args: Value) -> Value {
         let res = self
             .http
             .post(format!("{}/admin/{name}", self.url))
@@ -65,7 +65,7 @@ impl Harness {
         body
     }
 
-    pub async fn codex_account(&self, chatgpt_account_id: &str, priority: i64, enabled: bool) -> String {
+    pub(crate) async fn codex_account(&self, chatgpt_account_id: &str, priority: i64, enabled: bool) -> String {
         let jwt = fake_jwt(chatgpt_account_id, &format!("{chatgpt_account_id}@test"), in_a_day_ms());
         let acc = self
             .op(
@@ -79,7 +79,7 @@ impl Harness {
         id
     }
 
-    pub async fn key(&self) -> String {
+    pub(crate) async fn key(&self) -> String {
         self.op("key_create", json!({"name": "test"})).await["key"]
             .as_str()
             .expect("key secret")
