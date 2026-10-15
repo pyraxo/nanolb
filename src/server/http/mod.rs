@@ -71,6 +71,26 @@ fn translate(req: Value, format: ApiFormat, requested: &str) -> Result<(Value, R
     })
 }
 
+fn prepare(app: &App, key: &Key, provider: Provider, h: &HeaderMap, user_id: Option<&str>, up: &mut Value) -> String {
+    if provider == Provider::Codex {
+        codex::prepare_body(up);
+    } else {
+        up["stream"] = Value::Bool(true);
+        up["usage"] = json!({"include": true});
+    }
+    let cache = session_key(h, user_id, up);
+    let session = Sessions::key(&key.cfg.id, provider, &cache);
+    if provider == Provider::Codex && up.get("prompt_cache_key").is_none() {
+        up["prompt_cache_key"] = Value::String(cache);
+    }
+    if provider == Provider::Codex
+        && let Some(acc) = file_owner(app, up)
+    {
+        app.sessions.bind(session.clone(), acc, now_ms());
+    }
+    session
+}
+
 async fn handle(app: Arc<App>, key: Arc<Key>, format: ApiFormat, h: HeaderMap, body: Bytes) -> Result<Response, ApiError> {
     let started = now_ms();
     key.check(started).map_err(|e| ApiError::from((format, e)))?;
@@ -99,22 +119,7 @@ async fn handle(app: Arc<App>, key: Arc<Key>, format: ApiFormat, h: HeaderMap, b
             format!("no {provider} accounts connected to serve model {model}"),
         ));
     }
-    if provider == Provider::Codex {
-        codex::prepare_body(&mut up);
-    } else {
-        up["stream"] = Value::Bool(true);
-        up["usage"] = json!({"include": true});
-    }
-    let cache = session_key(&h, user_id.as_deref(), &up);
-    let session = Sessions::key(&key.cfg.id, provider, &cache);
-    if provider == Provider::Codex && up.get("prompt_cache_key").is_none() {
-        up["prompt_cache_key"] = Value::String(cache);
-    }
-    if provider == Provider::Codex
-        && let Some(acc) = file_owner(&app, &up)
-    {
-        app.sessions.bind(session.clone(), acc, now_ms());
-    }
+    let session = prepare(&app, &key, provider, &h, user_id.as_deref(), &mut up);
     let job = Job {
         app,
         settings,
