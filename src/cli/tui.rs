@@ -21,10 +21,10 @@ struct Snapshot {
     message: String,
 }
 
-async fn fetch(client: &Client) -> Result<Snapshot, String> {
-    let status = client.call("status", json!({})).await.map_err(|e| e.to_string())?;
-    let usage = client.call("usage", json!({ "since": "24h" })).await.map_err(|e| e.to_string())?;
-    let requests = client.call("requests", json!({ "limit": 15 })).await.map_err(|e| e.to_string())?;
+async fn fetch(client: &Client) -> anyhow::Result<Snapshot> {
+    let status = client.call("status", json!({})).await?;
+    let usage = client.call("usage", json!({ "since": "24h" })).await?;
+    let requests = client.call("requests", json!({ "limit": 15 })).await?;
     let rows = usage.as_array().cloned().unwrap_or_default();
     Ok(Snapshot {
         accounts: status["accounts"].as_array().cloned().unwrap_or_default(),
@@ -40,7 +40,7 @@ async fn fetch(client: &Client) -> Result<Snapshot, String> {
 }
 
 fn pct(v: &Value) -> String {
-    v.as_f64().map(|p| format!("{p:.0}%")).unwrap_or_else(|| "-".into())
+    v.as_f64().map_or_else(|| "-".into(), |p| format!("{p:.0}%"))
 }
 
 fn ago(ts: &Value) -> String {
@@ -57,7 +57,7 @@ fn ago(ts: &Value) -> String {
     }
 }
 
-fn draw(f: &mut Frame, snap: &Snapshot, state: &mut TableState) {
+fn draw(f: &mut Frame<'_>, snap: &Snapshot, state: &mut TableState) {
     let [head, accounts, requests, foot] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Min(5),
@@ -76,21 +76,25 @@ fn draw(f: &mut Frame, snap: &Snapshot, state: &mut TableState) {
     );
 
     let rows = snap.accounts.iter().map(|a| {
-        let name = a["label"].as_str().filter(|s| !s.is_empty()).or(a["email"].as_str()).unwrap_or("-");
+        let name = a["label"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .or_else(|| a["email"].as_str())
+            .unwrap_or("-");
         let flags = format!(
             "{}/{}",
             if a["enabled"].as_bool().unwrap_or(false) { "on" } else { "off" },
             if a["available"].as_bool().unwrap_or(false) { "ok" } else { "busy" }
         );
         Row::new(vec![
-            name.to_string(),
-            a["plan"].as_str().unwrap_or("-").to_string(),
+            name.to_owned(),
+            a["plan"].as_str().unwrap_or("-").to_owned(),
             flags,
             pct(&a["rate_limit"]["primary"]["used_percent"]),
             pct(&a["rate_limit"]["secondary"]["used_percent"]),
             ago(&a["rate_limit"]["secondary"]["resets_at"]),
             a["inflight"].to_string(),
-            a["last_error"]["message"].as_str().unwrap_or("").to_string(),
+            a["last_error"]["message"].as_str().unwrap_or("").to_owned(),
         ])
     });
     let table = Table::new(
@@ -114,7 +118,7 @@ fn draw(f: &mut Frame, snap: &Snapshot, state: &mut TableState) {
     let rows = snap.requests.iter().map(|r| {
         Row::new(vec![
             r["ts"].as_str().unwrap_or("-").chars().skip(11).take(8).collect::<String>(),
-            r["model"].as_str().unwrap_or("-").to_string(),
+            r["model"].as_str().unwrap_or("-").to_owned(),
             r["status"].to_string(),
             r["input"].to_string(),
             r["output"].to_string(),
@@ -148,35 +152,29 @@ fn draw(f: &mut Frame, snap: &Snapshot, state: &mut TableState) {
     );
 }
 
-async fn act(client: &Client, snap: &Snapshot, selected: Option<usize>, key: char) -> Result<String, String> {
+async fn act(client: &Client, snap: &Snapshot, selected: Option<usize>, key: char) -> anyhow::Result<String> {
     let Some(a) = selected.and_then(|i| snap.accounts.get(i)) else {
         return Ok(String::new());
     };
     if key == 'e' {
         let enabled = !a["enabled"].as_bool().unwrap_or(false);
-        client
-            .call("account_update", json!({ "id": a["id"], "enabled": enabled }))
-            .await
-            .map_err(|e| e.to_string())?;
+        client.call("account_update", json!({ "id": a["id"], "enabled": enabled })).await?;
         Ok(format!("enabled={enabled}"))
     } else {
-        let r = client
-            .call("account_warmup", json!({ "id": a["id"] }))
-            .await
-            .map_err(|e| e.to_string())?;
+        let r = client.call("account_warmup", json!({ "id": a["id"] })).await?;
         Ok(format!("warmup {}", r["status"]))
     }
 }
 
-async fn event_loop(term: &mut DefaultTerminal, client: &Client, interval: Duration) -> Result<(), String> {
+async fn event_loop(term: &mut DefaultTerminal, client: &Client, interval: Duration) -> anyhow::Result<()> {
     let mut snap = fetch(client).await?;
     let mut state = TableState::default().with_selected(Some(0));
     let mut last = Instant::now();
     loop {
-        term.draw(|f| draw(f, &snap, &mut state)).map_err(|e| e.to_string())?;
+        term.draw(|f| draw(f, &snap, &mut state))?;
         let mut refresh = last.elapsed() >= interval;
-        if event::poll(Duration::from_millis(200)).map_err(|e| e.to_string())?
-            && let Event::Key(k) = event::read().map_err(|e| e.to_string())?
+        if event::poll(Duration::from_millis(200))?
+            && let Event::Key(k) = event::read()?
         {
             if k.kind != KeyEventKind::Press {
                 continue;
@@ -187,7 +185,7 @@ async fn event_loop(term: &mut DefaultTerminal, client: &Client, interval: Durat
                 KeyCode::Down => state.select_next(),
                 KeyCode::Up => state.select_previous(),
                 KeyCode::Char(c @ ('e' | 'w')) => {
-                    let msg = act(client, &snap, state.selected(), c).await.unwrap_or_else(|e| e);
+                    let msg = act(client, &snap, state.selected(), c).await.unwrap_or_else(|e| e.to_string());
                     refresh = true;
                     snap.message = msg;
                 }
@@ -198,14 +196,14 @@ async fn event_loop(term: &mut DefaultTerminal, client: &Client, interval: Durat
             let message = std::mem::take(&mut snap.message);
             match fetch(client).await {
                 Ok(s) => snap = Snapshot { message, ..s },
-                Err(e) => snap.message = e,
+                Err(e) => snap.message = e.to_string(),
             }
             last = Instant::now();
         }
     }
 }
 
-pub async fn run(client: Client, interval_secs: u64) -> Result<(), String> {
+pub(super) async fn run(client: Client, interval_secs: u64) -> anyhow::Result<()> {
     let mut term = ratatui::init();
     let result = event_loop(&mut term, &client, Duration::from_secs(interval_secs.max(1))).await;
     ratatui::restore();
