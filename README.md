@@ -1,61 +1,59 @@
 # nanolb
 
-nanolb is a small, fast load balancer for Codex (ChatGPT) accounts and OpenRouter keys. It is one Rust binary with a SQLite store. It has no web GUI: you control it with the CLI, an admin RPC API and MCP.
+A small, fast load balancer for your Codex (ChatGPT) subscriptions.
 
-AI agents: read [AGENTS.md](AGENTS.md). It has the full setup and operation guide, the admin op list and a troubleshooting table.
+You sign in to nanolb with each ChatGPT account you own. Point your tools at nanolb instead of OpenAI. When one account runs into its usage limit, nanolb moves new work to the next one. Your agent keeps going and nobody has to switch accounts by hand.
 
-nanolb accepts four client API formats and sends each request to an upstream account:
+It is one Rust binary with a SQLite file next to it. There is no web dashboard. You drive it from the command line, an HTTP admin API, or MCP, so AI agents can run it as easily as you can.
 
-| Client format | Endpoint |
-|---|---|
-| Codex CLI / OpenAI Responses | `POST /backend-api/codex/responses`, `POST /v1/responses`, `GET /backend-api/codex/models`; WebSocket: `GET` on the two `responses` paths |
-| OpenAI Chat Completions | `POST /v1/chat/completions`, `GET /v1/models` |
-| OpenRouter | `POST /api/v1/chat/completions`, `GET /api/v1/models`, `GET /api/v1/key` |
-| Anthropic Messages | `POST /v1/messages`, `POST /v1/messages/count_tokens`, `GET /v1/models` (with an `anthropic-version` header) |
+## Why nanolb
 
-nanolb also serves usage, files, transcription, image, embedding and realtime voice routes. AGENTS.md lists them all.
+nanolb adds about 0.1 ms to a request. Streams pass straight through, connections to OpenAI are reused, and nothing on the request path waits on the database.
+
+A conversation stays on one account until that account hits a limit, so long agent sessions keep their prompt cache and stay cheap. If an account is rate limited, returns an error or drops the connection before the reply starts, nanolb quietly retries on another account.
+
+Your tools don't need to change. nanolb accepts OpenAI Responses (over HTTP or WebSocket), Chat Completions, OpenRouter and Anthropic Messages requests, so the Codex CLI, Hermes, Claude Code, the OpenAI SDKs and OpenRouter clients all work as they are.
+
+Every request is recorded with its tokens, cache hits, cost and latency, and you can break that down by account, API key or model.
+
+nanolb started as a rewrite of [codex-lb](https://github.com/Soju06/codex-lb), with speed and agent control as the main goals.
 
 ## Quick start
 
+You need Rust 1.97 or newer.
+
 ```sh
-cargo install --path . --locked                 # installs to ~/.cargo/bin; reruns replace it safely
-nanolb up                                        # background server on 127.0.0.1:2455, data in ~/.nanolb
-nanolb down                                      # clean stop
-nanolb service install                           # or run as a service: launchd on macOS, systemd on Linux (as root)
-nanolb login                                     # device-code login, one per account
-nanolb login --browser                           # or a browser PKCE login
-nanolb accounts add-openrouter sk-or-...         # optional: OpenRouter upstream
-nanolb keys create hermes                        # prints the nlb-... key one time
-nanolb codex-config --key nlb-...                # prints client config snippets
-nanolb analytics --since 7d                      # latency, errors, cache hits, top keys and models
-nanolb plan --apply                              # project quota exhaustion, set staggered warmups
-nanolb sessions ls                               # sticky pins; also sessions rm and sessions purge
-nanolb reset-credits ls <account>                # banked reset credits; also reset-credits consume
+git clone https://github.com/pyraxo/nanolb && cd nanolb
+cargo install --path . --locked
+
+nanolb up                     # start the server on 127.0.0.1:2455
+nanolb login                  # sign in to a ChatGPT account (repeat for each account)
+nanolb keys create laptop     # make an API key for your tools; it's shown once
+nanolb codex-config --key nlb-...   # print ready-to-paste config for your tools
 ```
 
-Do not use `nanolb accounts import` on the `~/.codex/auth.json` that your Codex CLI still uses. A refresh token can be used one time only. When nanolb refreshes the token, the Codex CLI copy stops working. Use `nanolb login` to give nanolb its own session.
+`nanolb login` shows a code and a link. Open the link, sign in and enter the code. If your workspace doesn't allow device codes, use `nanolb login --browser`.
 
-## Connect a client
+Use `nanolb login` rather than importing `~/.codex/auth.json`. Each sign-in token can be refreshed only once, so if nanolb and your Codex CLI share a login, one of them gets signed out.
 
-Hermes Agent (`~/.hermes/config.yaml`, with `NANOLB_API_KEY=nlb-...` in `~/.hermes/.env`):
+## Connect your tools
 
-```yaml
-providers:
-  nanolb:
-    api: http://127.0.0.1:2455/v1
-    key_env: NANOLB_API_KEY
-    transport: codex_responses
-    default_model: gpt-6.1-sol
-    discover_models: true
-model:
-  default: gpt-6.1-sol
-  provider: custom:nanolb
-```
+Each tool needs a base URL and the `nlb-...` key you created.
 
-Codex CLI (`~/.codex/config.toml`):
+| Tool | Base URL |
+|---|---|
+| Codex CLI | `http://127.0.0.1:2455/backend-api/codex` |
+| OpenAI SDKs and anything with an "OpenAI base URL" setting | `http://127.0.0.1:2455/v1` |
+| Anthropic SDKs and Claude Code (`ANTHROPIC_BASE_URL`) | `http://127.0.0.1:2455` |
+| OpenRouter clients | `http://127.0.0.1:2455/api/v1` |
+
+### Codex CLI
+
+Add this to `~/.codex/config.toml`, then `export NANOLB_API_KEY=nlb-...`:
 
 ```toml
 model_provider = "nanolb"
+
 [model_providers.nanolb]
 name = "nanolb"
 base_url = "http://127.0.0.1:2455/backend-api/codex"
@@ -67,99 +65,101 @@ supports_websockets = true
 remote_compaction = "v2"
 ```
 
-Claude Code: set `ANTHROPIC_BASE_URL=http://127.0.0.1:2455`, `ANTHROPIC_AUTH_TOKEN=nlb-...` and `ANTHROPIC_MODEL=gpt-6.1-sol`. nanolb serves Codex models on `/v1/messages`. Hermes can use the same endpoint with a provider that has `api: http://127.0.0.1:2455` and `transport: anthropic_messages` (see AGENTS.md).
+### Hermes Agent
 
-OpenAI SDKs: use base URL `http://127.0.0.1:2455/v1`. OpenRouter SDKs: use `http://127.0.0.1:2455/api/v1`.
+Put `NANOLB_API_KEY=nlb-...` in `~/.hermes/.env` and add this to `~/.hermes/config.yaml`:
 
-## Models and providers
+```yaml
+providers:
+  nanolb:
+    base_url: "http://127.0.0.1:2455/v1"
+    key_env: "NANOLB_API_KEY"
+    api_mode: codex_responses
+    model: gpt-6.1-sol
+    discover_models: true
 
-- nanolb gets the Codex model list from the live backend. To see it, run `nanolb models`.
-- A model id that contains `/` goes to an OpenRouter account. For example: `z-ai/glm-5.3-flash`, `deepseek/deepseek-v4.1-flash`, `anthropic/claude-opus-5.5`. nanolb removes an `openai/` prefix first, so `openai/gpt-5.5` goes to Codex.
-- nanolb never replaces one model with a different model. The model id that the client sends selects the provider:
-
-  | Model id | Provider accounts |
-  |---|---|
-  | contains `/` (for example `deepseek/deepseek-v4.1-flash`) | OpenRouter |
-  | all other ids (for example `gpt-6.1-sol`) | Codex |
-
-  If no account of that provider is connected, nanolb returns an error.
-
-## Routing
-
-nanolb routes for cache first. All requests of one conversation stay on one account, so the upstream prompt cache stays warm. The sticky key is the first of these that exists:
-
-1. The `session_id`, `session-id`, `thread-id` or `conversation_id` header.
-2. `prompt_cache_key`.
-3. Anthropic `metadata.user_id`.
-4. A hash of the instructions and the first input items.
-
-nanolb moves a conversation to a different account only when its account is rate limited, cooling down or failing. The conversation then stays on the new account.
-
-For a new conversation, nanolb uses the strategy you set with `nanolb settings set strategy <name>`:
-
-| Strategy | Behavior |
-|---|---|
-| `preserve` (default) | Use the account with the lowest usage. |
-| `burn` | Use the account whose weekly window resets first, so its quota is not wasted. |
-| `round_robin` | Use the accounts in turn. |
-| `priority` | Use the lowest `priority` number first. Change to the next account when it is limited. |
-| `latency` | Use the account with the best score: low time to first byte and a low recent error rate. |
-
-Before the first byte goes to the client, nanolb fails over to the next account when the upstream returns 429, 5xx, 401/403 or a connection error. On a 401, nanolb refreshes the token one time and tries again. Access tokens are also refreshed before they expire. One refresh at a time runs for each account.
-
-## Speed and compatibility
-
-- nanolb sends the upstream request body with zstd compression (setting `compress_upstream`, default on).
-- nanolb sends an SSE comment (`: keepalive`) when a stream is idle for `keepalive_secs` (default 15). This keeps tunnels open.
-- nanolb passes the upstream `x-request-id`, `openai-model`, `x-reasoning-included`, `x-models-etag` and `x-codex-*` headers to the client. It adds the pool rate-limit headers `x-codex-primary-*` and `x-codex-secondary-*`, so Codex `/status` shows the pool.
-- The Codex CLI can use a WebSocket on `/responses`. Set `supports_websockets = true`.
-- nanolb does not turn HTTP requests into WebSocket requests. HTTP/2 pooling already removes the set-up cost of each request, and HTTP clients send the full history each time, so a bridge gives no gain.
-
-## Warmup
-
-A rate-limit window starts at the first request in it. A warmup sends a very small prompt at a set time, so the window starts and resets at a time you can predict. Schedules use cron syntax in local time:
-
-```sh
-nanolb accounts set-warmup <id> "0 4 * * *"      # 04:00 every day
-nanolb accounts warmup <id>                      # send one now
+model:
+  default: "gpt-6.1-sol"
+  provider: "custom:nanolb"
 ```
 
-nanolb skips a scheduled warmup when both windows are already active.
+### Claude Code
 
-## API keys and usage
+Claude Code can use your Codex models through nanolb:
 
 ```sh
-nanolb keys create team --account <id> --model gpt-6.1-sol --limit day:usd:5 --limit month:tokens:20000000
-nanolb usage --since 7d --group account          # also: key | model | hour | day
-nanolb requests --limit 20
-nanolb top                                       # live TUI
+export ANTHROPIC_BASE_URL=http://127.0.0.1:2455
+export ANTHROPIC_AUTH_TOKEN=nlb-...
+export ANTHROPIC_MODEL=gpt-6.1-sol
 ```
 
-nanolb records each request with a timestamp, account, key, model, input/cached/output/reasoning tokens, cost, latency and time to first byte.
+## Models
 
-## Agent access
+The model name you send picks where the request goes. nanolb never swaps one model for another.
 
-- **Admin RPC:** `POST /admin/{op}` with a JSON body and `Authorization: Bearer $(cat ~/.nanolb/admin_token)`. Run `nanolb call <op> '<json>'` from the shell. The list of ops is in [AGENTS.md](AGENTS.md).
-- **MCP over HTTP:** `http://127.0.0.1:2455/mcp`. Use the same admin token.
-- **MCP over stdio:** `nanolb mcp`. Example: `claude mcp add nanolb -- nanolb mcp`.
+- Plain names like `gpt-6.1-sol` go to your Codex accounts. Run `nanolb models` to see what your accounts can use right now.
+- Names with a slash, like `z-ai/glm-5.3-flash` or `deepseek/deepseek-v4.1-flash`, go to OpenRouter. Add a key first with `nanolb accounts add-openrouter sk-or-...`.
 
-## Network
+## Day to day
 
-The server listens on `127.0.0.1:2455` by default.
+```sh
+nanolb status                       # accounts, limits and today's totals
+nanolb top                          # live view in the terminal
+nanolb usage --since 7d --group account
+nanolb analytics --since 7d         # latency, errors, cache hits, top keys and models
+nanolb accounts ls                  # refer to accounts by id, email or label
+nanolb settings get                 # every setting; change one with `settings set <key> <value>`
+```
 
-- **Tailnet:** run `nanolb serve --host <tailscale-ip>` or `--host 0.0.0.0`.
-- **Cloudflare Tunnel:** point the tunnel at `http://127.0.0.1:2455`.
+### Routing
 
-Each proxy request needs an API key. Each admin or MCP request needs the admin token.
+nanolb places each new conversation using the strategy you set with `nanolb settings set strategy <name>`:
 
-## Configuration
-
-| Variable | Default |
+| Strategy | Picks |
 |---|---|
-| `NANOLB_HOME` | `~/.nanolb` |
-| `NANOLB_HOST` | `127.0.0.1` |
-| `NANOLB_PORT` | `2455` |
-| `NANOLB_URL` (CLI) | `http://127.0.0.1:2455` |
-| `NANOLB_ADMIN_TOKEN` (CLI) | contents of `$NANOLB_HOME/admin_token` |
+| `preserve` (default) | the account with the most headroom |
+| `burn` | the account whose weekly limit resets soonest, so its quota isn't wasted |
+| `latency` | the account that has been answering fastest |
+| `round_robin` | each account in turn |
+| `priority` | your preferred order, falling through when one is limited |
 
-To see all runtime settings, run `nanolb settings get`. They include the strategy, stickiness, retry attempts, model lists, pricing, upstream URLs, the Codex client version, the warmup model, keepalive, compression, prewarm and the realtime base URL.
+### Limits on keys
+
+A key can have its own daily, weekly or monthly caps on tokens, cost or requests, and you can restrict which accounts and models it may use:
+
+```sh
+nanolb keys create teammate --model gpt-6.1-sol --limit day:usd:5 --limit month:tokens:20000000
+```
+
+### Warmups
+
+A usage window starts with the first request in it. A scheduled warmup sends a tiny request so your windows start, and therefore reset, at a time that suits you:
+
+```sh
+nanolb accounts set-warmup work@example.com "0 4 * * *"   # every day at 04:00 local time
+nanolb plan                                               # when will each account run out?
+```
+
+## Run it as a service
+
+```sh
+nanolb service install        # macOS: a launchd agent for your user
+sudo nanolb service install   # Linux: a systemd service with its own user
+nanolb service uninstall      # add --purge to delete the data too
+```
+
+The service starts at boot and comes back after a crash. On Linux, data lives in `/var/lib/nanolb` and logs in `journalctl -u nanolb`. Everywhere else, data and logs are in `~/.nanolb`. Stopping cleanly saves rate limits, cooldowns and conversation pins, so restarts don't cost you cache hits.
+
+## Reaching it from other machines
+
+nanolb listens on `127.0.0.1` by default. To use it over Tailscale, start it with `--host` set to your tailnet IP. To expose it through a Cloudflare Tunnel, point the tunnel at `http://127.0.0.1:2455`. Every request needs an API key, and the admin API needs the admin token in `~/.nanolb/admin_token`.
+
+## For AI agents
+
+Agents that install or run nanolb for someone should read [AGENTS_README.md](AGENTS_README.md). It covers every command, admin API call and MCP tool, and has a troubleshooting table. Agents that change nanolb's code should read [AGENTS.md](AGENTS.md).
+
+nanolb also runs as an MCP server, either over stdio (`claude mcp add nanolb -- nanolb mcp`) or at `http://127.0.0.1:2455/mcp` with the admin token.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the checks every change has to pass and the commit conventions.

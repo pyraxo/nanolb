@@ -33,13 +33,13 @@ NANOLB_API_KEY={key}
 # Hermes Agent: ~/.hermes/config.yaml
 providers:
   nanolb:
-    api: {url}/v1
-    key_env: NANOLB_API_KEY
-    transport: codex_responses
-    default_model: gpt-6.1-sol
+    base_url: "{url}/v1"
+    key_env: "NANOLB_API_KEY"
+    api_mode: codex_responses
+    model: gpt-6.1-sol
     discover_models: true
 model:
-  default: gpt-6.1-sol
-  provider: custom:nanolb"#
+  default: "gpt-6.1-sol"
+  provider: "custom:nanolb""#
     );
 }
