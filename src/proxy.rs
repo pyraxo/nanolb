@@ -551,6 +551,11 @@ async fn handle(app: Arc<App>, kind: Kind, h: HeaderMap, body: Bytes) -> Respons
         up["prompt_cache_key"] = Value::String(cache.clone());
     }
     let session = format!("{}\u{1f}{provider}\u{1f}{cache}", key.cfg.id);
+    if provider == "codex"
+        && let Some(acc) = file_owner(&app, &up)
+    {
+        app.sticky.lock().insert(session.clone(), (acc, now_ms()));
+    }
     let upstream = match send(&app, &key, provider, (kind == Kind::Responses).then_some(&h), &up, &session).await {
         Ok(u) => u,
         Err((503, _)) if let Some(until) = app.next_available(provider, &key.cfg.accounts) => {
@@ -590,6 +595,16 @@ async fn handle(app: Arc<App>, kind: Kind, h: HeaderMap, body: Bytes) -> Respons
             run(job, upstream, tx, stream, move |r| anthropic::from_response(r, &opts)).await
         }
     }
+}
+
+fn file_owner(app: &App, up: &Value) -> Option<String> {
+    up["input"]
+        .as_array()?
+        .iter()
+        .filter_map(|item| item["content"].as_array())
+        .flatten()
+        .find_map(|part| part["file_id"].as_str())
+        .and_then(|id| crate::endpoints::file_account(app, id))
 }
 
 pub async fn require_key(State(app): State<Arc<App>>, req: axum::extract::Request, next: axum::middleware::Next) -> Response {

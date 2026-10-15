@@ -181,7 +181,7 @@ static TOOLS: LazyLock<Vec<Tool>> = LazyLock::new(|| {
             "Update load-balancer settings; only the given fields change. strategy picks the account for a new conversation: preserve = least-used account first (spreads load); burn = account whose weekly window resets soonest first (uses quota before it resets); round_robin = rotate; priority = lowest account priority number first, falling through when limited. sticky (default on) keeps a conversation on one account to keep its prompt cache warm, moving only when that account is limited or failing.",
             schema(
                 json!({
-                    "strategy": {"type": "string", "enum": ["preserve", "burn", "round_robin", "priority"]},
+                    "strategy": {"type": "string", "enum": ["preserve", "burn", "round_robin", "priority", "latency"]},
                     "sticky": {"type": "boolean"},
                     "max_attempts": {"type": "integer", "description": "Accounts to try per request before failing"},
                     "models": {"type": "array", "items": {"type": "string"}, "description": "Models exposed to clients"},
