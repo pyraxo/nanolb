@@ -79,10 +79,25 @@ fn write_batch(conn: &Connection, batch: &[Write]) -> rusqlite::Result<()> {
     tx.commit()
 }
 
+const BATCH_WINDOW: std::time::Duration = std::time::Duration::from_millis(5);
+const BATCH_MAX: usize = 512;
+
+fn collect_batch(first: Write, rx: &mpsc::Receiver<Write>) -> Vec<Write> {
+    let mut batch = vec![first];
+    let deadline = std::time::Instant::now() + BATCH_WINDOW;
+    while batch.len() < BATCH_MAX {
+        let wait = deadline.saturating_duration_since(std::time::Instant::now());
+        match rx.recv_timeout(wait) {
+            Ok(w) => batch.push(w),
+            Err(_) => break,
+        }
+    }
+    batch
+}
+
 fn write_loop(conn: &Connection, rx: &mpsc::Receiver<Write>) {
     while let Ok(first) = rx.recv() {
-        let mut batch = vec![first];
-        batch.extend(rx.try_iter().take(511));
+        let batch = collect_batch(first, rx);
         if let Err(e) = write_batch(conn, &batch) {
             tracing::error!(error = %e, rows = batch.len(), "sqlite write failed");
         }
