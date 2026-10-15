@@ -1,6 +1,7 @@
 use super::account::{Account, AccountCfg, Provider};
 use crate::store::{Store, StoreError};
 use crate::time::now_ms;
+use axum::http::StatusCode;
 use parking_lot::{RwLock, RwLockReadGuard};
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -14,6 +15,15 @@ pub(crate) enum LookupError {
     NotFound(String),
     #[error("account {query} is ambiguous, use one of the ids: {}", ids.join(", "))]
     Ambiguous { query: String, ids: Vec<String> },
+}
+
+impl LookupError {
+    pub(crate) const fn status(&self) -> StatusCode {
+        match self {
+            Self::NotFound(_) => StatusCode::NOT_FOUND,
+            Self::Ambiguous { .. } => StatusCode::BAD_REQUEST,
+        }
+    }
 }
 
 const RATE_HEADERS: [[&str; 3]; 2] = [

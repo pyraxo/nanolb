@@ -23,6 +23,12 @@ pub enum StoreError {
     InvalidQuery(String),
 }
 
+impl StoreError {
+    pub(crate) const fn is_client(&self) -> bool {
+        matches!(self, Self::InvalidQuery(_))
+    }
+}
+
 pub struct Store {
     conn: Mutex<Connection>,
     writer: Writer,

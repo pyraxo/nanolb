@@ -42,12 +42,10 @@ pub(crate) enum AdminError {
 impl AdminError {
     pub(crate) const fn status(&self) -> StatusCode {
         match self {
-            Self::UnknownOp(_) | Self::NotFound(_) | Self::Lookup(LookupError::NotFound(_)) => StatusCode::NOT_FOUND,
-            Self::Store(StoreError::InvalidQuery(_))
-            | Self::Invalid(_)
-            | Self::Lookup(LookupError::Ambiguous { .. })
-            | Self::Upstream(_)
-            | Self::Time(_) => StatusCode::BAD_REQUEST,
+            Self::UnknownOp(_) | Self::NotFound(_) => StatusCode::NOT_FOUND,
+            Self::Lookup(e) => e.status(),
+            Self::Store(e) if e.is_client() => StatusCode::BAD_REQUEST,
+            Self::Invalid(_) | Self::Upstream(_) | Self::Time(_) => StatusCode::BAD_REQUEST,
             Self::Store(_) | Self::Json(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
