@@ -8,10 +8,12 @@ nanolb accepts four client API formats and sends each request to an upstream acc
 
 | Client format | Endpoint |
 |---|---|
-| Codex CLI / OpenAI Responses | `POST /backend-api/codex/responses`, `POST /v1/responses`, `GET /backend-api/codex/models` |
+| Codex CLI / OpenAI Responses | `POST /backend-api/codex/responses`, `POST /v1/responses`, `GET /backend-api/codex/models`; WebSocket: `GET` on the two `responses` paths |
 | OpenAI Chat Completions | `POST /v1/chat/completions`, `GET /v1/models` |
 | OpenRouter | `POST /api/v1/chat/completions`, `GET /api/v1/models`, `GET /api/v1/key` |
 | Anthropic Messages | `POST /v1/messages`, `POST /v1/messages/count_tokens`, `GET /v1/models` (with an `anthropic-version` header) |
+
+nanolb also serves usage, files, transcription, image, embedding and realtime voice routes. AGENTS.md lists them all.
 
 ## Quick start
 
@@ -59,6 +61,7 @@ name = "nanolb"
 base_url = "http://127.0.0.1:2455/backend-api/codex"
 wire_api = "responses"
 env_key = "NANOLB_API_KEY"
+supports_websockets = true
 
 [model_providers.nanolb.capabilities]
 remote_compaction = "v2"
@@ -100,8 +103,17 @@ For a new conversation, nanolb uses the strategy you set with `nanolb settings s
 | `burn` | Use the account whose weekly window resets first, so its quota is not wasted. |
 | `round_robin` | Use the accounts in turn. |
 | `priority` | Use the lowest `priority` number first. Change to the next account when it is limited. |
+| `latency` | Use the account with the best score: low time to first byte and a low recent error rate. |
 
 Before the first byte goes to the client, nanolb fails over to the next account when the upstream returns 429, 5xx, 401/403 or a connection error. On a 401, nanolb refreshes the token one time and tries again. Access tokens are also refreshed before they expire. One refresh at a time runs for each account.
+
+## Speed and compatibility
+
+- nanolb sends the upstream request body with zstd compression (setting `compress_upstream`, default on).
+- nanolb sends an SSE comment (`: keepalive`) when a stream is idle for `keepalive_secs` (default 15). This keeps tunnels open.
+- nanolb passes the upstream `x-request-id`, `openai-model`, `x-reasoning-included`, `x-models-etag` and `x-codex-*` headers to the client. It adds the pool rate-limit headers `x-codex-primary-*` and `x-codex-secondary-*`, so Codex `/status` shows the pool.
+- The Codex CLI can use a WebSocket on `/responses`. Set `supports_websockets = true`.
+- nanolb does not turn HTTP requests into WebSocket requests. HTTP/2 pooling already removes the set-up cost of each request, and HTTP clients send the full history each time, so a bridge gives no gain.
 
 ## Warmup
 
@@ -150,4 +162,4 @@ Each proxy request needs an API key. Each admin or MCP request needs the admin t
 | `NANOLB_URL` (CLI) | `http://127.0.0.1:2455` |
 | `NANOLB_ADMIN_TOKEN` (CLI) | contents of `$NANOLB_HOME/admin_token` |
 
-To see all runtime settings, run `nanolb settings get`. They include the strategy, stickiness, retry attempts, model lists, pricing, upstream URLs, the Codex client version and the warmup models.
+To see all runtime settings, run `nanolb settings get`. They include the strategy, stickiness, retry attempts, model lists, pricing, upstream URLs, the Codex client version, the warmup model, keepalive, compression, prewarm and the realtime base URL.

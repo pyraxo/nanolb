@@ -79,6 +79,33 @@ The model id in the request selects the provider. nanolb never replaces one mode
 - If no account of the selected provider is connected, nanolb returns 503.
 - To list the models, run `nanolb models` (admin op `models`) or `GET /v1/models`.
 
+### 3.1 Endpoints
+
+All routes in this table need a client key (`Authorization: Bearer nlb-...` or `x-api-key`). The admin routes (`/admin/{op}`, `/mcp`) need the admin token. `/health` needs no key.
+
+| Route | Purpose |
+|---|---|
+| `POST /v1/responses`, `POST /backend-api/codex/responses` | OpenAI Responses (SSE). Codex CLI. |
+| `GET /v1/responses`, `GET /backend-api/codex/responses` | WebSocket upgrade for the Codex CLI (section 7.1). |
+| `GET /backend-api/codex/models` | Codex model list. |
+| `POST /v1/chat/completions`, `GET /v1/models` | OpenAI Chat Completions and model list. |
+| `POST /api/v1/chat/completions`, `GET /api/v1/models`, `GET /api/v1/key`, `GET /api/v1/auth/key` | OpenRouter format. |
+| `POST /v1/messages`, `POST /v1/messages/count_tokens` | Anthropic format. Serves Codex models. `GET /v1/models` with an `anthropic-version` header returns the same models. |
+| `GET /backend-api/wham/usage`, `GET /api/codex/usage` | Pool usage for the key: plan, primary and secondary window, `allowed`. |
+| `GET /v1/usage` | Usage and limits of the calling key, and pool usage. |
+| `POST /backend-api/files`, `POST /backend-api/files/{id}/uploaded` | File upload to Codex. nanolb remembers which account owns the file. |
+| `POST /backend-api/transcribe`, `POST /v1/audio/transcriptions` | Transcription (multipart). The `/v1` route needs `model=gpt-4o-transcribe`. |
+| `POST /v1/images/generations`, `POST /backend-api/codex/images/generations` | Image generation. Default model `gpt-image-2`. Not streamed. |
+| `POST /v1/images/edits` (multipart), `POST /backend-api/codex/images/edits` (JSON `images[].image_url`) | Image edit. Up to 16 images and an optional mask. |
+| `POST /v1/embeddings` | Embeddings. OpenRouter model ids only (with `/`). |
+| `POST /v1/realtime/calls`, `POST /backend-api/codex/realtime/calls` | Realtime voice call set-up. |
+| `GET /v1/realtime`, `GET /v1/live/{call_id}`, `GET /backend-api/codex/{call_id}` | Realtime WebSocket and call side channel. |
+| `GET /health` | Returns `ok`. |
+
+Files: an `input_file` item with a `file_id` goes to the account that got the upload. This applies to `POST` on `/v1/responses` and `/backend-api/codex/responses`. nanolb sets the sticky pin of the conversation to that account. If that account is limited or failing, nanolb can fail over, and the other account does not know the file.
+
+Realtime routes go to `realtime_base` (default `https://api.openai.com/v1`) with a Codex account. A call keeps its account for the side channel (`/v1/live/{call_id}`). An unknown or expired call id returns 404.
+
 ## 4. Connect accounts
 
 Each account type has its own login. Run each login one time for each account.
@@ -196,7 +223,7 @@ supports_websockets = true
 remote_compaction = "v2"
 ```
 
-The `capabilities` table turns on remote compaction (v2). Codex then sends `compaction_trigger` items on `/responses`, and nanolb forwards them like any other request.
+`supports_websockets = true` makes the Codex CLI use a WebSocket on `/responses` (section 7.1). If the WebSocket fails, the CLI uses HTTP. The `capabilities` table turns on remote compaction (v2). Codex then sends `compaction_trigger` items on `/responses`, and nanolb forwards them like any other request.
 
 Then: `export NANOLB_API_KEY=nlb-...`.
 
@@ -256,6 +283,16 @@ nanolb reset-credits consume <account> [--credit <id>]
 - `sessions` manages the sticky pins. A removed pin is also removed from SQLite.
 - `reset-credits consume` spends one banked reset credit. Without `--credit` it uses the available credit that expires first.
 
+### 7.1 Speed and compatibility features
+
+- **Header passthrough.** nanolb copies these upstream response headers to the client: `x-request-id`, `openai-model`, `x-reasoning-included`, `x-models-etag` and every `x-codex-*` header (for example `x-codex-turn-state`) except the `x-codex-primary-*` and `x-codex-secondary-*` rate-limit headers. nanolb also forwards the `x-codex-*` request headers of the client upstream.
+- **Pool rate-limit headers.** On Codex responses nanolb sets `x-codex-primary-used-percent`, `-window-minutes` and `-reset-at`, and the same three for `secondary`. The values are the pool total for the Codex accounts that the key may use. Plan weights apply. The Codex `/status` command shows the pool. The Codex CLI reads these headers over HTTP. Over a WebSocket nanolb sends `codex.rate_limits` events.
+- **SSE keepalive.** nanolb sends `: keepalive` (an SSE comment) when a stream is idle for `keepalive_secs` (default 15). Set `0` to turn it off. It stops proxies and Cloudflare tunnels from closing a quiet stream.
+- **zstd.** With `compress_upstream` true (default) nanolb compresses the Codex upstream request body with zstd (level 3) and sets `Content-Encoding: zstd`. Set it to `false` if an upstream rejects the body.
+- **WebSocket.** `GET /v1/responses` and `GET /backend-api/codex/responses` upgrade to a WebSocket. nanolb opens a WebSocket to the Codex upstream with a pool account, relays the frames, and fails over on a handshake 429 or 5xx and on a close before the first event. A conversation keeps its account (sticky key from the session headers, or from the first frame). Usage rows have `endpoint` `responses_ws`.
+- **Prewarm.** Setting `prewarm` (default `false`). When true, nanolb sends one extra upstream request with `generate=false` for each client WebSocket whose first request is not already a prewarm. The cost is at most 1 extra upstream request for each client connection. The Codex CLI sends its own prewarm, so the cost is 0 for the Codex CLI. HTTP clients cost 0.
+- **No HTTP-to-WebSocket bridge.** nanolb does not turn HTTP requests into WebSocket requests. HTTP/2 connection pooling already removes the per-request set-up cost. HTTP clients also send the full history in each request, so a WebSocket upstream gives no gain.
+
 ### Strategies
 
 The strategy picks the account for a new conversation. A sticky conversation keeps its account until that account is limited or failing.
@@ -266,10 +303,13 @@ The strategy picks the account for a new conversation. A sticky conversation kee
 | `burn` | Use the account whose weekly window resets first. |
 | `round_robin` | Use the accounts in turn. |
 | `priority` | Use the lowest `priority` number first. Go to the next when limited. |
+| `latency` | Use the account with the lowest score: `(ttfb average + 1000 ms) * (1 + 4 * recent error rate)`. Ties go to the account with fewer in-flight requests. |
+
+Each account in `accounts ls` and `status` has `latency.ttfb_ewma_ms` and `latency.error_rate`. These are the inputs of the `latency` strategy.
 
 ### Settings fields (defaults)
 
-`strategy` (`preserve`), `sticky` (`true`), `max_attempts` (4, accounts tried for each request), `models`, `pricing` (model to `[input, cached, output]` USD per 1M tokens), `upstream_base`, `codex_version` (`0.160.0`), `usage_poll_secs` (60), `warmup_model` (`gpt-6-luna`), `openrouter_base`, `openrouter_models`, `first_event_timeout_secs` (90), `idle_timeout_secs` (600). An unknown setting name returns an error.
+`strategy` (`preserve`), `sticky` (`true`), `max_attempts` (4, accounts tried for each request), `models`, `pricing` (model to `[input, cached, output]` USD per 1M tokens), `upstream_base`, `codex_version` (`0.160.0`), `usage_poll_secs` (60), `warmup_model` (`gpt-6-luna`), `openrouter_base`, `openrouter_models`, `first_event_timeout_secs` (90), `idle_timeout_secs` (600), `keepalive_secs` (15), `compress_upstream` (`true`), `realtime_base` (`https://api.openai.com/v1`), `prewarm` (`false`). An unknown setting name returns an error.
 
 ### Warmup
 
@@ -285,7 +325,7 @@ nanolb accounts clear-warmup <id>
 
 nanolb writes logs to stderr. Set `NANOLB_LOG` to a tracing filter (default `info`, for example `nanolb=debug`). Set `NANOLB_LOG_FORMAT=json` for JSON lines.
 
-Each finished request logs one line with message `request` and these fields: `endpoint` (`responses`, `chat`, `openrouter` or `anthropic`), `key`, `account`, `model`, `status`, `input`, `cached`, `output`, `reasoning`, `cost_usd`, `latency_ms`, `ttfb_ms`. Other lines: `upstream error, failing over`, `account cooling down`, `token refresh failed`, `token refreshed`, `warmup sent`, `request failed`.
+Each finished request logs one line with message `request` and these fields: `endpoint` (`responses`, `chat`, `openrouter`, `anthropic`, `warmup`, `files`, `transcribe`, `images`, `embeddings`, `responses_ws`, `realtime` or `realtime_call`), `key`, `account`, `model`, `status`, `input`, `cached`, `output`, `reasoning`, `cost_usd`, `latency_ms`, `ttfb_ms`. Other lines: `upstream error, failing over`, `account cooling down`, `token refresh failed`, `token refreshed`, `warmup sent`, `request failed`.
 
 ### Where state lives
 
@@ -340,7 +380,7 @@ curl -s -X POST http://127.0.0.1:2455/admin/status -H "Authorization: Bearer $TO
 | `plan` | `work_start?`, `lookback?`, `apply?` | per account: `windows` with `exhausts_at`, `recommended_warmup` |
 | `analytics` | `since?` (default `7d`), `view?` (default `all`), `by?`, `bucket?`, `limit?` | rows for the view |
 
-An account object has `id`, `kind` (`codex` or `openrouter`), `email`, `label`, `plan`, `enabled`, `priority`, `available`, `cooldown_until`, `inflight`, `rate_limit`, `last_error` and `warmup`.
+An account object has `id`, `kind` (`codex` or `openrouter`), `email`, `label`, `plan`, `enabled`, `priority`, `available`, `cooldown_until`, `inflight`, `rate_limit`, `latency` (`ttfb_ewma_ms`, `error_rate`), `last_error` and `warmup`.
 
 ## 9. Troubleshooting
 
@@ -356,9 +396,17 @@ An account object has `id`, `kind` (`codex` or `openrouter`), `email`, `label`, 
 | 503 `no available accounts` | All accounts are disabled, cooling down or already tried. Run `nanolb accounts ls`, check `available`, `cooldown_until` and `last_error`. Run `accounts refresh <id>` to clear a cooldown. |
 | Codex returns an error that the model is not supported | The model id is not valid for the ChatGPT account. nanolb does not substitute models. Pick an id from `nanolb models`. |
 | Account cools down (log `account cooling down`) | The upstream returned 429 (until the limit reset, default 60 s), 401 (5 min), 5xx (5 s). nanolb tries the next account. If it stays, check `rate_limit` in `accounts ls`. |
-| `token refresh failed` in logs, account unavailable | 400 or 401 on refresh is permanent: the refresh token was used elsewhere or revoked. The account cools down for 1 hour. Log in again (section 4) and remove the old account. Do not share logins (section 4.6). 5xx or network errors retry after 30 s. |
+| `token refresh failed` in logs, account unavailable | 400 or 401 on refresh is permanent: the refresh token was used elsewhere or revoked. The account cools down for 1 hour. Log in again (section 4) and remove the old account. Do not share logins (section 4.4). 5xx or network errors retry after 30 s. |
 | `openrouter rejected key: 401` | The OpenRouter key is invalid. |
 | `cannot bind 127.0.0.1:1455` | Port 1455 is in use during `login --browser`. Stop the other program or use the device login. |
 | `login ... not found` | The server restarted, or the id is wrong. Login state is in memory. Start the login again. |
+| WebSocket in the Codex CLI fails or falls back to HTTP | Check `supports_websockets = true`. Check the log for `upstream rejected websocket` or `websocket handshake failed`. An HTTP fallback still works. |
+| `404 realtime call binding not found or expired` | The call id is unknown or old. Create the call again with `POST /v1/realtime/calls`. |
+| `400 model X is not supported, use gpt-4o-transcribe` | `/v1/audio/transcriptions` accepts only that model. |
+| `400 model "X" is not supported for embeddings` | Embeddings need an OpenRouter model id with `/`, for example `openai/text-embedding-3-small`, and an OpenRouter account. |
+| Image request returns no image | Image calls are not streamed. The message gives the upstream error. Check `model` and the account plan. |
+| A request with `file_id` fails after a failover | The file belongs to one account, and that account was limited or failing. Wait for it, or upload the file again. |
+| Stream closes in a tunnel while the model thinks | Set `keepalive_secs` to a value below the tunnel idle timeout. |
+| Upstream rejects the request body | Run `nanolb settings set compress_upstream false`. |
 | Poor cache hits | The client sends no stable session id. See "Sticky key" in section 6. Check `cached` in `nanolb requests`. |
 | `bind host:port: ...` at start | The port is in use. Use `--port`. |
